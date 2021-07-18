@@ -28,5 +28,14 @@ Alternatively, you can become a [Github Sponsor](https://github.com/sponsors/Rob
 
 Thanks a lot for supporting free and open software!
 
+## Other projects using Snapdrop
 
+#### Android App
+<a href="https://github.com/fm-sys/snapdrop-android" target="_blank">Snapdrop for Android</a>
+
+#### iOS App
+<a href="https://github.com/CDsigma/Snapdrop-iOS-App" target="_blank">Snapdrop iOS App</a>
+
+#### Firefox/Chrome Addon
+<a href="https://github.com/ueen/SnapdropFirefoxAddon" target="_blank">Snapdrop Web Extension</a>
  
