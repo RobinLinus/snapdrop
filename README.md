@@ -1,5 +1,27 @@
 # Snapdrop 
 
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+  <a href="https://github.com/RobinLinus/snapdrop">
+    <img src="https://onedoes.github.io/snapdrop/images/touch/chrome-splashscreen-icon-384x384.png" alt="Logo"  width="150" height="150">
+  </a>
+ 
+ 
+  <h3 align="center">Snapdrop</h3>
+
+  <p align="center">
+    Local file sharing in your browser. Inspired by Apple's Airdrop.
+    <br />
+    <a href="https://snapdrop.net"><strong>Explore  »</strong></a>
+    <br />
+    <br />
+    <a href="https://github.com/RobinLinus/snapdrop/issues">Report Bug</a>
+    ·
+    <a href="https://github.com/RobinLinus/snapdrop/issues">Request Feature</a>
+  </p>
+</div>
+
 [Snapdrop](https://snapdrop.net): local file sharing in your browser. Inspired by Apple's Airdrop.
 
 
