@@ -188,9 +188,18 @@ class Peer {
             this.ip = request.connection.remoteAddress;
         }
         // IPv4 and IPv6 use different values to refer to localhost
-        if (this.ip == '::1' || this.ip == '::ffff:127.0.0.1') {
+        if (this.ip === '::1' || this.ip === '::ffff:127.0.0.1') {
             this.ip = '127.0.0.1';
         }
+        // put all peers on the same network as the server into the same room
+        if (this.ipIsPrivate(this.ip)) {
+            this.ip = '127.0.0.1';
+        }
+    }
+
+    ipIsPrivate(ip) {
+        //         10.0.0.0 - 10.255.255.255        ||   172.16.0.0 - 172.31.255.255                          ||    192.168.0.0 - 192.168.255.255
+        return  /^(10)\.(.*)\.(.*)\.(.*)$/.test(ip) || /^(172)\.(1[6-9]|2[0-9]|3[0-1])\.(.*)\.(.*)$/.test(ip) || /^(192)\.(168)\.(.*)\.(.*)$/.test(ip)
     }
 
     _setPeerId(request) {

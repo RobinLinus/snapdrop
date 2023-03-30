@@ -12,7 +12,7 @@
 
 Have any questions? Read our [FAQ](/docs/faq.md).
 
-You can [host your own instance with Docker](/docs/local-dev.md).
+You can [host your own instance with Docker](/docs/host-your-own.md).
 
 
 ## Support the Snapdrop Community
