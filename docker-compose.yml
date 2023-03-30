@@ -7,6 +7,7 @@ services:
     volumes:
       - ./server/:/home/node/app
     command: ash -c "npm i && node index.js"
+    restart: always
   nginx:
     build:
       context: ./docker/
@@ -23,3 +24,4 @@ services:
     env_file: ./docker/fqdn.env
     entrypoint: /mnt/openssl/create.sh
     command: ["nginx", "-g", "daemon off;"]
+    restart: always
