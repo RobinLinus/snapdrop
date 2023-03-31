@@ -1,0 +1,23 @@
+[package]
+name = "snapdrop-server"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.66"
+futures-util = "0.3.25"
+lazy_static = "1.4.0"
+thiserror = "1.0.37"
+tokio = { version = "1.21.2", features = ["full"] }
+tokio-tungstenite = { version = "0.17.2", features = ["native-tls"] }
+tracing = "0.1.37"
+uaparser = "0.6.0"
+uuid = { version = "1.2.1", features = ["v4", "fast-rng"] }
+
+# do everything to make the binary faster
+[profile.release]
+strip = true
+codegen-units = 1
+lto = true
