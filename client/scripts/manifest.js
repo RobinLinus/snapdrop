@@ -1,4 +1,4 @@
-{
+const content = {
     "name": "Snapdrop",
     "short_name": "Snapdrop",
     "icons": [{
@@ -26,7 +26,7 @@
     }],
     "background_color": "#efefef",
     "start_url": "/",
-    "display": "minimal-ui",
+    "display": "standalone",
     "theme_color": "#3367d6",
     "share_target": {
         "method":"GET",
@@ -38,3 +38,18 @@
         }
     }
 }
+
+const iOSversion = parseFloat(
+	('' + (/CPU.*OS ([0-9_]{1,5})|(CPU like).*AppleWebKit.*Mobile/i.exec(navigator.userAgent) || [0,''])[1])
+	.replace('undefined', '3_2').replace('_', '.').replace('_', '')
+) || false;
+
+
+if (iOSversion && iOSversion < 13) {
+    content["display"] = "minimal-ui";
+}
+
+const stringManifest = JSON.stringify(content);
+const blob = new Blob([stringManifest], {type: 'application/json'});
+const manifestURL = URL.createObjectURL(blob);
+document.querySelector('#manifest-placeholder').setAttribute('href', manifestURL);
