@@ -4,6 +4,8 @@ const isURL = text => /^((https?:\/\/|www)[^\s]+)/g.test(text.toLowerCase());
 window.isDownloadSupported = (typeof document.createElement('a').download !== 'undefined');
 window.isProductionEnvironment = !window.location.host.startsWith('localhost');
 window.iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+window.pasteMode = {};
+window.pasteMode.activated = false;
 
 // set display name
 Events.on('display-name', e => {
@@ -52,19 +54,113 @@ class PeersUI {
         const $peers = $$('x-peers').innerHTML = '';
     }
 
+    _getPeers() {
+        let peers = []
+        const peersNodes = document.querySelectorAll('x-peer');
+        peersNodes.forEach(function(peersNode) {
+            peers.push({
+                id: peersNode.id,
+                name: peersNode.name,
+                rtcSupported: peersNode.rtcSupported
+            })
+        });
+        return peers;
+    }
+
     _onPaste(e) {
-        const files = e.clipboardData.files || e.clipboardData.items
-            .filter(i => i.type.indexOf('image') > -1)
-            .map(i => i.getAsFile());
-        const peers = document.querySelectorAll('x-peer');
-        // send the pasted image content to the only peer if there is one
-        // otherwise, select the peer somehow by notifying the client that
-        // "image data has been pasted, click the client to which to send it"
-        // not implemented
-        if (files.length > 0 && peers.length === 1) {
+        if(document.querySelectorAll('x-dialog[show]').length === 0) {
+            // prevent send on paste when dialog is open
+            e.preventDefault()
+            const files = e.clipboardData.files;
+            const text = e.clipboardData.getData("Text");
+            if (files.length === 0 && text === 0) return;
+            this._activatePasteMode(files, text);
+        }
+    }
+
+
+    _activatePasteMode(files, text) {
+        if (!window.pasteMode.activated) {
+            let descriptor;
+            let noPeersMessage;
+
+            if (files.length === 1) {
+                descriptor = files[0].name;
+                noPeersMessage = `Open Snapdrop on other devices to send <i>${descriptor}</i> directly`;
+            } else if (files.length > 1) {
+                console.debug(files);
+                descriptor = `${files.length} files`;
+                noPeersMessage = `Open Snapdrop on other devices to send ${descriptor} directly`;
+            } else if (text.length > 0) {
+                descriptor = `pasted text`;
+                noPeersMessage = `Open Snapdrop on other devices to send ${descriptor} directly`;
+            }
+
+            const xInstructions = document.querySelectorAll('x-instructions')[0];
+            xInstructions.setAttribute('desktop', `Click to send ${descriptor} directly`);
+            xInstructions.setAttribute('mobile', `Tap to send ${descriptor} directly`);
+
+            const xNoPeers = document.querySelectorAll('x-no-peers')[0];
+            xNoPeers.getElementsByTagName('h2')[0].innerHTML = noPeersMessage;
+
+            const _callback = (e) => this._sendClipboardData(e, files, text);
+            Events.on('paste-pointerdown', _callback);
+
+            const _deactivateCallback = (e) => this._deactivatePasteMode(e, _callback)
+            const cancelPasteModeBtn = document.getElementById('cancelPasteModeBtn');
+            cancelPasteModeBtn.addEventListener('click', this._cancelPasteMode)
+            cancelPasteModeBtn.removeAttribute('hidden');
+
+            Events.on('notify-user', _deactivateCallback);
+
+            window.pasteMode.descriptor = descriptor;
+            window.pasteMode.activated = true;
+            console.log('Paste mode activated.')
+
+            this._onPeers(this._getPeers());
+        }
+    }
+
+    _cancelPasteMode() {
+        Events.fire('notify-user', 'Paste Mode canceled');
+    }
+
+    _deactivatePasteMode(e, _callback) {
+        if (window.pasteMode.activated && ['File transfer completed.', 'Message transfer completed.', 'Paste Mode canceled'].includes(e.detail)) {
+            window.pasteMode.descriptor = undefined;
+            window.pasteMode.activated = false;
+            console.log('Paste mode deactivated.')
+
+            Events.off('paste-pointerdown', _callback);
+
+            const xInstructions = document.querySelectorAll('x-instructions')[0];
+            xInstructions.setAttribute('desktop', 'Click to send files or right click to send a message');
+            xInstructions.setAttribute('mobile', 'Tap to send files or long tap to send a message');
+
+            const xNoPeers = document.querySelectorAll('x-no-peers')[0];
+            xNoPeers.getElementsByTagName('h2')[0].innerHTML = 'Open Snapdrop on other devices to send files';
+
+            const cancelPasteModeBtn = document.getElementById('cancelPasteModeBtn');
+            cancelPasteModeBtn.removeEventListener('click', this._cancelPasteMode);
+            cancelPasteModeBtn.setAttribute('hidden', "");
+
+            this._onPeers(this._getPeers());
+        }
+    }
+
+    _sendClipboardData(e, files, text) {
+        // send the pasted file/text content
+        const peerId = e.detail.peerId;
+
+        if (files.length > 0) {
             Events.fire('files-selected', {
                 files: files,
-                to: $$('x-peer').id
+                to: peerId
+            });
+        } else if (text.length > 0) {
+            Events.fire('send-text', {
+                text: text,
+                to: peerId
             });
         }
     }
@@ -73,9 +169,20 @@ class PeersUI {
 class PeerUI {
 
     html() {
+        let title;
+        let textInput;
+
+        if (window.pasteMode.activated) {
+            title = `Click to send ${window.pasteMode.descriptor} directly`;
+            textInput = '';
+        } else {
+            title = 'Click to send files or right click to send a message';
+            textInput = '<input type="file" multiple>';
+        }
+
         return `
-            <label class="column center" title="Click to send files or right click to send a text">
-                <input type="file" multiple>
+            <label class="column center" title="${title}">
+                ${textInput}
                 <x-icon shadow="1">
                     <svg class="icon"><use xlink:href="#"/></svg>
                 </x-icon>
@@ -86,7 +193,7 @@ class PeerUI {
                 <div class="name font-subheading"></div>
                 <div class="device-name font-body2"></div>
                 <div class="status font-body2"></div>
-            </label>`
+            </label>`;
     }
 
     constructor(peer) {
@@ -98,6 +205,8 @@ class PeerUI {
     _initDom() {
         const el = document.createElement('x-peer');
         el.id = this._peer.id;
+        el.name = this._peer.name;
+        el.rtcSupported = this._peer.rtcSupported;
         el.innerHTML = this.html();
         el.ui = this;
         el.querySelector('svg use').setAttribute('xlink:href', this._icon());
@@ -108,17 +217,30 @@ class PeerUI {
     }
 
     _bindListeners(el) {
-        el.querySelector('input').addEventListener('change', e => this._onFilesSelected(e));
-        el.addEventListener('drop', e => this._onDrop(e));
-        el.addEventListener('dragend', e => this._onDragEnd(e));
-        el.addEventListener('dragleave', e => this._onDragEnd(e));
-        el.addEventListener('dragover', e => this._onDragOver(e));
-        el.addEventListener('contextmenu', e => this._onRightClick(e));
-        el.addEventListener('touchstart', e => this._onTouchStart(e));
-        el.addEventListener('touchend', e => this._onTouchEnd(e));
-        // prevent browser's default file drop behavior
-        Events.on('dragover', e => e.preventDefault());
-        Events.on('drop', e => e.preventDefault());
+        if(!window.pasteMode.activated) {
+            el.querySelector('input').addEventListener('change', e => this._onFilesSelected(e));
+            el.addEventListener('drop', e => this._onDrop(e));
+            el.addEventListener('dragend', e => this._onDragEnd(e));
+            el.addEventListener('dragleave', e => this._onDragEnd(e));
+            el.addEventListener('dragover', e => this._onDragOver(e));
+            el.addEventListener('contextmenu', e => this._onRightClick(e));
+            el.addEventListener('touchstart', e => this._onTouchStart(e));
+            el.addEventListener('touchend', e => this._onTouchEnd(e));
+            // prevent browser's default file drop behavior
+            Events.on('dragover', e => e.preventDefault());
+            Events.on('drop', e => e.preventDefault());
+        } else {
+            el.addEventListener('pointerdown', (e) => this._onPointerDown(e));
+        }
+    }
+
+    _onPointerDown(e) {
+        // Prevents triggering of event twice on touch devices
+        e.stopPropagation();
+        e.preventDefault();
+        Events.fire('paste-pointerdown', {
+            peerId: this._peer.id
+        });
     }
 
     _displayName() {
@@ -382,10 +504,10 @@ class ReceiveTextDialog extends Dialog {
 class Toast extends Dialog {
     constructor() {
         super('toast');
-        Events.on('notify-user', e => this._onNotfiy(e.detail));
+        Events.on('notify-user', e => this._onNotifiy(e.detail));
     }
 
-    _onNotfiy(message) {
+    _onNotifiy(message) {
         this.$el.textContent = message;
         this.show();
         setTimeout(_ => this.hide(), 3000);
