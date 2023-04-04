@@ -137,7 +137,7 @@ class SnapdropServer {
 
     _keepAlive(peer) {
         this._cancelKeepAlive(peer);
-        var timeout = 30000;
+        var timeout = 500;
         if (!peer.lastBeat) {
             peer.lastBeat = Date.now();
         }
@@ -182,7 +182,9 @@ class Peer {
     }
 
     _setIP(request) {
-        if (request.headers['x-forwarded-for']) {
+        if (request.headers['cf-connecting-ip']) {
+            this.ip = request.headers['cf-connecting-ip'].split(/\s*,\s*/)[0];
+        } else if (request.headers['x-forwarded-for']) {
             this.ip = request.headers['x-forwarded-for'].split(/\s*,\s*/)[0];
         } else {
             this.ip = request.connection.remoteAddress;
