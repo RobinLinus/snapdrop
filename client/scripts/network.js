@@ -293,6 +293,7 @@ class RTCPeer extends Peer {
 
     _onChannelOpened(event) {
         console.log('RTC: channel opened with', this._peerId);
+        Events.fire('peer-connected', this._peerId);
         const channel = event.channel || event.target;
         channel.binaryType = 'arraybuffer';
         channel.onmessage = e => this._onMessage(e.data);
@@ -302,7 +303,8 @@ class RTCPeer extends Peer {
 
     _onChannelClosed() {
         console.log('RTC: channel closed', this._peerId);
-        if (!this.isCaller) return;
+        Events.fire('peer-left', this._peerId);
+        if (!this._isCaller) return;
         this._connect(this._peerId, true); // reopen the channel
     }
 
