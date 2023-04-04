@@ -210,6 +210,13 @@ class Dialog {
     constructor(id) {
         this.$el = $(id);
         this.$el.querySelectorAll('[close]').forEach(el => el.addEventListener('click', e => this.hide()))
+        this.$el.querySelectorAll('[role="textbox"]').forEach((el) => {
+          el.addEventListener("keypress", (e) => {
+            if (e.key == "Escape") {
+              this.hide();
+            }
+          });
+        })
         this.$autoFocus = this.$el.querySelector('[autofocus]');
     }
 
