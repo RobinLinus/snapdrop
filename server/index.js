@@ -20,7 +20,7 @@ class SnapdropServer {
         const WebSocket = require('ws');
         this._wss = new WebSocket.Server({ port: port });
         this._wss.on('connection', (socket, request) => this._onConnection(new Peer(socket, request)));
-        this._wss.on('headers', (headers, response) => this._onHeaders(headers, response));
+        this._wss.on('headers', (headers, request) => this._onHeaders(headers, request));
 
         this._rooms = {};
 
@@ -43,10 +43,10 @@ class SnapdropServer {
         });
     }
 
-    _onHeaders(headers, response) {
-        if (response.headers.cookie && response.headers.cookie.indexOf('peerid=') > -1) return;
-        response.peerId = Peer.uuid();
-        headers.push('Set-Cookie: peerid=' + response.peerId + "; SameSite=Strict; Secure");
+    _onHeaders(headers, request) {
+        if (request.headers.cookie && request.headers.cookie.indexOf('peerid=') > -1) return;
+        request.peerId = Peer.uuid();
+        headers.push('Set-Cookie: peerid=' + request.peerId + "; SameSite=Strict; Secure");
     }
 
     _onMessage(sender, message) {
