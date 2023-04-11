@@ -86,6 +86,7 @@ class SnapdropServer {
 
         // notify all other peers
         for (const otherPeerId in this._rooms[peer.ip]) {
+            if (otherPeerId === peer.id) continue;
             const otherPeer = this._rooms[peer.ip][otherPeerId];
             this._send(otherPeer, {
                 type: 'peer-joined',
@@ -96,6 +97,7 @@ class SnapdropServer {
         // notify peer about the other peers
         const otherPeers = [];
         for (const otherPeerId in this._rooms[peer.ip]) {
+            if (otherPeerId === peer.id) continue;
             otherPeers.push(this._rooms[peer.ip][otherPeerId].getInfo());
         }
 
