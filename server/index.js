@@ -182,8 +182,12 @@ class Peer {
     }
 
     _setIP(request) {
-        if (request.headers['x-forwarded-for']) {
-            this.ip = request.headers['x-forwarded-for'].split(/\s*,\s*/)[0];
+        let xForwarded = request.headers['x-forwarded-for'];
+        let cfIp = request.headers['cf-connecting-ip'];
+        if (cfIp) {
+            this.ip = cfIp;
+        } else if (xForwarded) {
+            this.ip = xForwarded.split(/\s*,\s*/)[0];
         } else {
             this.ip = request.connection.remoteAddress;
         }
