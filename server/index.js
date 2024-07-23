@@ -187,10 +187,51 @@ class Peer {
         } else {
             this.ip = request.connection.remoteAddress;
         }
+
+        // remove the prefix used for IPv4-translated addresses
+        if (this.ip.substring(0,7) === "::ffff:")
+            this.ip = this.ip.substring(7);
+
         // IPv4 and IPv6 use different values to refer to localhost
-        if (this.ip == '::1' || this.ip == '::ffff:127.0.0.1') {
+        // put all peers that are on the same network as the server into the same room as well
+        if (this.ip === '::1' || this.ipIsPrivate(this.ip)) {
             this.ip = '127.0.0.1';
         }
+    }
+
+    ipIsPrivate(ip) {
+        // if ip is IPv4
+        if (!ip.includes(":")) {
+            //         10.0.0.0 - 10.255.255.255        ||   172.16.0.0 - 172.31.255.255                          ||    192.168.0.0 - 192.168.255.255
+            return  /^(10)\.(.*)\.(.*)\.(.*)$/.test(ip) || /^(172)\.(1[6-9]|2[0-9]|3[0-1])\.(.*)\.(.*)$/.test(ip) || /^(192)\.(168)\.(.*)\.(.*)$/.test(ip)
+        }
+
+        // else: ip is IPv6
+        const firstWord = ip.split(":").find(el => !!el); //get first not empty word
+
+        // The original IPv6 Site Local addresses (fec0::/10) are deprecated. Range: fec0 - feff
+        if (/^fe[c-f][0-f]$/.test(firstWord))
+            return true;
+
+        // These days Unique Local Addresses (ULA) are used in place of Site Local.
+        // Range: fc00 - fcff
+        else if (/^fc[0-f]{2}$/.test(firstWord))
+            return true;
+
+        // Range: fd00 - fcff
+        else if (/^fd[0-f]{2}$/.test(firstWord))
+            return true;
+
+        // Link local addresses (prefixed with fe80) are not routable
+        else if (firstWord === "fe80")
+            return true;
+
+        // Discard Prefix
+        else if (firstWord === "100")
+            return true;
+
+        // Any other IP address is not Unique Local Address (ULA)
+        return false;
     }
 
     _setPeerId(request) {
