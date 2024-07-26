@@ -1,5 +1,6 @@
 window.URL = window.URL || window.webkitURL;
 window.isRtcSupported = !!(window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection);
+window.snapdrop_mount = "/"; // change this if app is deployed on a different path than `/`.
 
 class ServerConnection {
 
@@ -58,7 +59,9 @@ class ServerConnection {
         // hack to detect if deployment or development environment
         const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
         const webrtc = window.isRtcSupported ? '/webrtc' : '/fallback';
-        const url = protocol + '://' + location.host + location.pathname + 'server' + webrtc;
+        let room = location.pathname.replace(window.snapdrop_mount, "");
+        room = room ? `?room=${room}` : "";
+        const url = protocol + '://' + location.host + window.snapdrop_mount + 'server' + webrtc + room;
         return url;
     }
 
