@@ -167,8 +167,11 @@ class Peer {
             case 'progress':
                 this._onDownloadProgress(message.progress);
                 break;
-            case 'transfer-complete':
-                this._onTransferCompleted();
+            case 'file-transfer-complete':
+                this._onFileTransferCompleted();
+                break;
+            case 'message-transfer-complete':
+                this._onMessageTransferCompleted();
                 break;
             case 'text':
                 this._onTextReceived(message);
@@ -204,15 +207,19 @@ class Peer {
 
     _onFileReceived(proxyFile) {
         Events.fire('file-received', proxyFile);
-        this.sendJSON({ type: 'transfer-complete' });
+        this.sendJSON({ type: 'file-transfer-complete' });
     }
 
-    _onTransferCompleted() {
+    _onFileTransferCompleted() {
         this._onDownloadProgress(1);
         this._reader = null;
         this._busy = false;
         this._dequeueFile();
         Events.fire('notify-user', 'File transfer completed.');
+    }
+
+    _onMessageTransferCompleted() {
+        Events.fire('notify-user', 'Message transfer completed.');
     }
 
     sendText(text) {
@@ -223,6 +230,7 @@ class Peer {
     _onTextReceived(message) {
         const escaped = decodeURIComponent(escape(atob(message.text)));
         Events.fire('text-received', { text: escaped, sender: this._peerId });
+        this.sendJSON({ type: 'message-transfer-complete' });
     }
 }
 
@@ -302,7 +310,7 @@ class RTCPeer extends Peer {
 
     _onChannelClosed() {
         console.log('RTC: channel closed', this._peerId);
-        if (!this.isCaller) return;
+        if (!this._isCaller) return;
         this._connect(this._peerId, true); // reopen the channel
     }
 
