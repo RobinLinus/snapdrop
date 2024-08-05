@@ -50,6 +50,7 @@ Here's a list of other people hosting inofficial instances of Snapdrop:
 - https://airtransferer.web.app/
 - https://drop.wuyuan.dev
 - https://share.jck.cx
+- https://node-snapdrop.onrender.com
 
 DISCLAIMER: WE ARE NOT IN ANY WAY AFFILIATED WITH THE PEOPLE WHO RUN THESE INSTANCES. WE DO NOT KNOW THEM. WE CANNOT VERIFY THE CODE THEY ARE RUNNING!
 
