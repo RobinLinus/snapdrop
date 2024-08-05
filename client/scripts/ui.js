@@ -26,8 +26,6 @@ class PeersUI {
     _onPeerJoined(peer) {
         if ($(peer.id)) return; // peer already exists
         const peerUI = new PeerUI(peer);
-        $$('x-peers').appendChild(peerUI.$el);
-        setTimeout(e => window.animateBackground(false), 1750); // Stop animation
     }
 
     _onPeers(peers) {
@@ -91,8 +89,18 @@ class PeerUI {
 
     constructor(peer) {
         this._peer = peer;
-        this._initDom();
-        this._bindListeners(this.$el);
+        this.callbackFunction = (e) => this._onPeerConnected(e.detail);
+        Events.on('peer-connected', this.callbackFunction);
+    }
+
+    _onPeerConnected(peerId) {
+        if (peerId === this._peer.id) {
+            Events.off('peer-connected', this.callbackFunction)
+            this._initDom();
+            this._bindListeners(this.$el);
+            $$('x-peers').appendChild(this.$el);
+            setTimeout(e => window.animateBackground(false), 1750); // Stop animation
+        }
     }
 
     _initDom() {
