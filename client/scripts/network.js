@@ -302,7 +302,7 @@ class RTCPeer extends Peer {
 
     _onChannelClosed() {
         console.log('RTC: channel closed', this._peerId);
-        if (!this.isCaller) return;
+        if (!this._isCaller) return;
         this._connect(this._peerId, true); // reopen the channel
     }
 
