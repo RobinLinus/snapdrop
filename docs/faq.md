@@ -69,6 +69,8 @@ Here's a list of some third-party Snapdrop apps:
 
 1. [SnapDrop VSCode Extension](https://github.com/Yash-Garg/snapdrop-vsc)
 
+1. [Snapdrop For Desktop (doesn't require server connection)](https://github.com/JustSch/node-snapdrop-electron)
+
 1. Feel free to make one :)
 
 
