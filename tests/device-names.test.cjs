@@ -53,10 +53,14 @@ test('colliding identities try other colors before numbered names, without dupli
 });
 
 function setup() {
+    const timers = new Map();
+    let nextTimer = 0;
     class Socket extends EventEmitter {
         constructor() {
             super();
             this.messages = [];
+            this.OPEN = 1;
+            this.readyState = 1;
         }
         send(message, callback) {
             this.messages.push(JSON.parse(message));
@@ -64,6 +68,7 @@ function setup() {
         }
         terminate() {
             this.terminated = true;
+            this.readyState = 3;
             this.emit('close');
         }
     }
@@ -76,11 +81,11 @@ function setup() {
             throw Error('Unexpected module: ' + name);
         },
         console: { log() {}, error() {} },
-        setTimeout() { return 1; },
-        clearTimeout() {}
+        setTimeout(fn) { const id = ++nextTimer; timers.set(id, fn); return id; },
+        clearTimeout(id) { timers.delete(id); }
     });
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../server/index.js'), 'utf8')
-        + '\nthis.server = server;', context);
+        + '\nthis.server = server; this.Peer = Peer;', context);
     const server = context.server;
     function connect(id, ip = '192.0.2.1', ua = { os: { name: 'Mac OS' } }) {
         const socket = new Socket();
@@ -90,9 +95,9 @@ function setup() {
             headers: { 'user-agent': JSON.stringify(ua) },
             connection: { remoteAddress: ip }
         });
-        return { peer: Object.values(server._rooms[ip]).find(peer => peer.socket === socket), socket };
+        return { peer: Object.values(server._rooms[ip]).flatMap(group => [...group.connections]).find(peer => peer.socket === socket), socket };
     }
-    return { server, connect };
+    return { server, connect, timers, Peer: context.Peer };
 }
 
 test('a crowded room announces unique names consistently to the owner and every observer', () => {
@@ -138,6 +143,13 @@ test('concurrent tabs keep the same peer identity and allocated name', () => {
     assert.equal(Object.keys(server._rooms[first.peer.ip]).length, 2);
     assert.notEqual(first.peer.name.displayName, other.peer.name.displayName);
     assert.equal(other.socket.terminated, undefined);
+    for (const tab of [other, ...tabs]) {
+        assert.equal(tab.socket.messages[0].type, 'display-name');
+        assert.equal(tab.socket.messages[0].message.id, 'BB');
+        assert.ok(!tab.socket.messages.some(message => message.type === 'peer-joined' && message.peer.id === 'BB'));
+        assert.ok(!tab.socket.messages.find(message => message.type === 'peers').peers.some(peer => peer.id === 'BB'));
+    }
+    assert.equal(first.socket.messages.filter(message => message.type === 'peer-joined' && message.peer.id === 'BB').length, 1);
 });
 
 test('departed peers release their names without renaming connected devices', () => {
@@ -177,4 +189,111 @@ test('late disconnect, close and heartbeat from the old socket cannot evict a re
     current.socket.emit('close');
     assert.equal(room.phone, undefined);
     assert.equal(observer.socket.messages.filter(message => message.type === 'peer-left').length, 1);
+});
+
+test('every live tab receives discovery updates and only the last departure removes the peer', () => {
+    const { connect } = setup();
+    const first = connect('phone');
+    const second = connect('phone');
+    const mac = connect('mac');
+    for (const tab of [first, second]) {
+        assert.equal(tab.socket.messages.filter(message => message.type === 'peer-joined' && message.peer.id === 'mac').length, 1);
+    }
+    first.socket.emit('close');
+    assert.equal(mac.socket.messages.filter(message => message.type === 'peer-left').length, 0);
+    second.socket.emit('close');
+    second.socket.emit('error', Error('late error'));
+    assert.equal(mac.socket.messages.filter(message => message.type === 'peer-left').length, 1);
+});
+
+test('dead sockets are terminated and lose their heartbeat without affecting healthy tabs', () => {
+    for (const failure of ['close', 'error', 'disconnect', 'timeout', 'send-error']) {
+        const { server, connect, timers } = setup();
+        const old = connect('phone');
+        const healthy = connect('phone');
+        const oldTimer = old.peer.timerId;
+        const healthyTimer = healthy.peer.timerId;
+        const lateHeartbeat = timers.get(oldTimer);
+        if (failure === 'timeout') {
+            old.peer.lastBeat = Date.now() - 60001;
+            server._keepAlive(old.peer);
+        } else if (failure === 'disconnect') old.socket.emit('message', '{"type":"disconnect"}');
+        else if (failure === 'send-error') {
+            old.socket.send = (message, callback) => callback(Error('broken socket'));
+            server._send(old.peer, { type: 'ping' });
+        } else old.socket.emit(failure, Error('disconnected'));
+        lateHeartbeat();
+        assert.equal(old.socket.terminated, true, failure);
+        assert.equal(old.peer.closed, true, failure);
+        assert.equal(old.peer.timerId, 0, failure);
+        assert.equal(timers.has(oldTimer), false, failure);
+        assert.equal(timers.has(healthyTimer), true, failure);
+        assert.equal(healthy.peer.connections.size, 1, failure);
+        assert.equal(server._rooms[healthy.peer.ip].phone, healthy.peer, failure);
+    }
+});
+
+test('tab-specific signaling stays on its connection when other tabs join', () => {
+    const { connect } = setup();
+    const first = connect('phone');
+    const second = connect('phone');
+    const receiver = connect('mac');
+    function send(client, message) { client.socket.emit('message', JSON.stringify({ type: 'signal', ...message })); }
+    send(first, { to: 'mac', sessionId: 'first-transfer', sdp: 'offer one' });
+    send(second, { to: 'mac', sessionId: 'second-transfer', sdp: 'offer two' });
+    const offers = receiver.socket.messages.filter(message => message.type === 'signal');
+    assert.equal(offers[0].senderSession, first.peer.connectionId);
+    assert.equal(offers[1].senderSession, second.peer.connectionId);
+    const anotherReceiver = connect('mac');
+    send(first, { to: 'mac', sessionId: 'first-transfer', ice: 'candidate' });
+    assert.equal(receiver.socket.messages.at(-1).ice, 'candidate');
+    assert.equal(anotherReceiver.socket.messages.filter(message => message.type === 'signal').length, 0);
+    send(receiver, { to: 'phone', toSession: offers[0].senderSession, sessionId: 'first-transfer', sdp: 'answer one' });
+    send(receiver, { to: 'phone', toSession: offers[1].senderSession, sessionId: 'second-transfer', sdp: 'answer two' });
+    assert.equal(first.socket.messages.at(-1).sdp, 'answer one');
+    assert.equal(second.socket.messages.at(-1).sdp, 'answer two');
+
+    first.socket.emit('close');
+    assert.equal(receiver.socket.messages.at(-1).disconnected, true);
+    assert.equal(receiver.socket.messages.at(-1).sessionId, 'first-transfer');
+    const count = second.socket.messages.length;
+    send(receiver, { to: 'phone', toSession: offers[0].senderSession, sessionId: 'first-transfer', sdp: 'late answer' });
+    send(first, { to: 'mac', sessionId: 'first-transfer', sdp: 'stale offer' });
+    assert.equal(second.socket.messages.length, count);
+    assert.equal(receiver.socket.messages.at(-1).disconnected, true);
+    assert.equal([...receiver.peer.routes.values()].some(route => route.peer === first.peer), false);
+});
+
+test('self-signaling is discarded and cookie identity is parsed independently of other cookies', () => {
+    const { connect, server, Peer } = setup();
+    const tab = connect('phone');
+    const count = tab.socket.messages.length;
+    tab.socket.emit('message', '{"type":"signal","to":"phone"}');
+    assert.equal(tab.socket.messages.length, count);
+    const id = 'c46f0d04-c460-4cf5-8ff3-74d0b83b1b3d';
+    for (const cookie of ['peerid=' + id, 'theme=dark; peerid=' + id + '; preference=yes']) {
+        assert.equal(Peer.cookieId(cookie), id);
+        const headers = [];
+        server._onHeaders(headers, { headers: { cookie } });
+        assert.equal(headers.length, 0);
+    }
+    for (const cookie of [undefined, 'otherpeerid=' + id, 'peerid=bad', 'peerid=']) {
+        const request = { headers: { cookie } };
+        const headers = [];
+        server._onHeaders(headers, request);
+        assert.ok(request.peerId);
+        assert.ok(headers[0].startsWith('Set-Cookie: peerid=' + request.peerId));
+    }
+});
+
+test('an older client can reply without echoing the negotiation ID', () => {
+    const { connect } = setup();
+    const caller = connect('phone');
+    const receiver = connect('mac');
+    caller.socket.emit('message', JSON.stringify({ type: 'signal', to: 'mac', sessionId: 'transfer', sdp: 'offer' }));
+    const otherTab = connect('phone');
+    receiver.socket.emit('message', JSON.stringify({ type: 'signal', to: 'phone', sdp: 'answer' }));
+    assert.equal(caller.socket.messages.at(-1).sdp, 'answer');
+    assert.equal(caller.socket.messages.at(-1).sessionId, 'transfer');
+    assert.equal(otherTab.socket.messages.filter(message => message.type === 'signal').length, 0);
 });

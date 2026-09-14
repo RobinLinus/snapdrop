@@ -22,35 +22,27 @@ class SnapdropServer {
         this._wss.on('connection', (socket, request) => this._onConnection(new Peer(socket, request)));
         this._wss.on('headers', (headers, response) => this._onHeaders(headers, response));
 
-        this._rooms = {};
+        this._rooms = Object.create(null);
 
         console.log('Snapdrop is running on port', port);
     }
 
     _onConnection(peer) {
-        this._joinRoom(peer);
         peer.socket.on('message', message => this._onMessage(peer, message));
-        peer.socket.on('error', console.error);
+        peer.socket.on('error', () => this._leaveRoom(peer));
         peer.socket.on('close', () => this._leaveRoom(peer));
+        this._joinRoom(peer);
         this._keepAlive(peer);
-
-        // send displayName
-        this._send(peer, {
-            type: 'display-name',
-            message: {
-                displayName: peer.name.displayName,
-                deviceName: peer.name.deviceName
-            }
-        });
     }
 
     _onHeaders(headers, response) {
-        if (response.headers.cookie && response.headers.cookie.indexOf('peerid=') > -1) return;
+        if (Peer.cookieId(response.headers.cookie)) return;
         response.peerId = Peer.uuid();
         headers.push('Set-Cookie: peerid=' + response.peerId + "; SameSite=Strict; Secure");
     }
 
     _onMessage(sender, message) {
+        if (sender.closed) return;
         // Try to parse message 
         try {
             message = JSON.parse(message);
@@ -58,22 +50,40 @@ class SnapdropServer {
             return; // TODO: handle malformed JSON
         }
 
+        if (!message || typeof message !== 'object') return;
         switch (message.type) {
             case 'disconnect':
                 this._leaveRoom(sender);
-                break;
+                return;
             case 'pong':
                 sender.lastBeat = Date.now();
-                break;
+                return;
         }
 
         // relay message to recipient
-        if (message.to && this._rooms[sender.ip]) {
-            const recipientId = message.to; // TODO: sanitize
-            const recipient = this._rooms[sender.ip][recipientId];
+        if (message.to && message.to !== sender.id && this._rooms[sender.ip]) {
+            const recipientId = message.to;
+            const group = this._rooms[sender.ip][recipientId];
+            if (!group) return;
+            // Older clients do not echo negotiation IDs; preserve their reply route.
+            if (!message.sessionId) {
+                const previous = [...sender.routes.values()].reverse()
+                    .find(route => route.peer.id === recipientId && !route.peer.closed);
+                if (previous) message.sessionId = previous.sessionId;
+            }
+            const key = recipientId + '/' + (message.sessionId || '');
+            const route = sender.routes.get(key);
+            const recipient = message.toSession
+                ? [...group.connections].find(connection => connection.connectionId === message.toSession)
+                : (route && !route.peer.closed ? route.peer : [...group.connections].reverse().find(connection => !connection.closed));
+            if (!recipient) return; // Never move a delayed answer to another tab.
+            sender.routes.set(key, { peer: recipient, sessionId: message.sessionId });
+            recipient.routes.set(sender.id + '/' + (message.sessionId || ''), { peer: sender, sessionId: message.sessionId });
             delete message.to;
+            delete message.toSession;
             // add sender id
             message.sender = sender.id;
+            message.senderSession = sender.connectionId;
             this._send(recipient, message);
             return;
         }
@@ -82,25 +92,34 @@ class SnapdropServer {
     _joinRoom(peer) {
         // if room doesn't exist, create it
         if (!this._rooms[peer.ip]) {
-            this._rooms[peer.ip] = {};
+            this._rooms[peer.ip] = Object.create(null);
         }
 
         // Tabs with the same identity share a name; only distinct peers compete.
         const existingPeer = this._rooms[peer.ip][peer.id];
         if (existingPeer) {
-            this._cancelKeepAlive(existingPeer);
-            peer.name.displayName = existingPeer.name.displayName;
+            peer.name = existingPeer.name;
+            peer.connections = existingPeer.connections;
         } else {
             const usedNames = new Set(Object.values(this._rooms[peer.ip])
                 .map(otherPeer => otherPeer.name.displayName));
             peer.name.displayName = getDisplayName(peer.id, peer._deviceLabel, usedNames);
+            this._rooms[peer.ip][peer.id] = peer;
         }
+        peer.connections.add(peer);
+
+        // Identity must arrive before discovery so clients can reject themselves.
+        this._send(peer, {
+            type: 'display-name',
+            message: { id: peer.id, connectionId: peer.connectionId,
+                displayName: peer.name.displayName, deviceName: peer.name.deviceName }
+        });
 
         // notify all other peers
         for (const otherPeerId in this._rooms[peer.ip]) {
-            if (otherPeerId === peer.id) continue;
+            if (existingPeer || otherPeerId === peer.id) continue;
             const otherPeer = this._rooms[peer.ip][otherPeerId];
-            this._send(otherPeer, {
+            this._sendToPeer(otherPeer, {
                 type: 'peer-joined',
                 peer: peer.getInfo()
             });
@@ -118,58 +137,74 @@ class SnapdropServer {
             peers: otherPeers
         });
 
-        // add peer to room
-        this._rooms[peer.ip][peer.id] = peer;
     }
 
     _leaveRoom(peer) {
+        if (peer.closed) return;
+        peer.closed = true;
         this._cancelKeepAlive(peer);
-        // A suspended page may close after its replacement has already joined.
-        if (!this._rooms[peer.ip] || this._rooms[peer.ip][peer.id] !== peer) return;
-
-        // delete the peer
-        delete this._rooms[peer.ip][peer.id];
-
+        peer.connections.delete(peer);
+        peer.routes.clear();
         peer.socket.terminate();
-        //if room is empty, delete the room
-        if (!Object.keys(this._rooms[peer.ip]).length) {
-            delete this._rooms[peer.ip];
-        } else {
-            // notify all other peers
-            for (const otherPeerId in this._rooms[peer.ip]) {
-                const otherPeer = this._rooms[peer.ip][otherPeerId];
-                this._send(otherPeer, { type: 'peer-left', peerId: peer.id });
+
+        const room = this._rooms[peer.ip];
+        if (!room || !room[peer.id] || room[peer.id].connections !== peer.connections) return;
+        const departed = peer.connections.size === 0;
+        if (departed) delete room[peer.id];
+        else if (room[peer.id] === peer) room[peer.id] = peer.connections.values().next().value;
+
+        for (const otherPeer of Object.values(room)) {
+            for (const connection of otherPeer.connections) {
+                for (const [key, route] of connection.routes) {
+                    if (route.peer !== peer) continue;
+                    connection.routes.delete(key);
+                    if (!departed) this._send(connection, { type: 'signal', sender: peer.id,
+                        senderSession: peer.connectionId, sessionId: route.sessionId, disconnected: true });
+                }
             }
+            if (departed) this._sendToPeer(otherPeer, { type: 'peer-left', peerId: peer.id });
         }
+        if (!Object.keys(room).length) delete this._rooms[peer.ip];
+    }
+
+    _sendToPeer(peer, message) {
+        for (const connection of [...peer.connections]) this._send(connection, message);
     }
 
     _send(peer, message) {
-        if (!peer) return;
-        if (this._wss.readyState !== this._wss.OPEN) return;
-        message = JSON.stringify(message);
-        peer.socket.send(message, error => '');
+        if (!peer || peer.closed) return;
+        if (peer.socket.readyState !== peer.socket.OPEN) return this._leaveRoom(peer);
+        try {
+            peer.socket.send(JSON.stringify(message), error => {
+                if (error) this._leaveRoom(peer);
+            });
+        } catch (_) {
+            this._leaveRoom(peer);
+        }
     }
 
     _keepAlive(peer) {
         this._cancelKeepAlive(peer);
-        if (!this._rooms[peer.ip] || this._rooms[peer.ip][peer.id] !== peer) return;
+        if (peer.closed) return;
         var timeout = 30000;
         if (!peer.lastBeat) {
             peer.lastBeat = Date.now();
         }
-        if (Date.now() - peer.lastBeat > 2 * timeout) {
+        if (Date.now() - peer.lastBeat >= 2 * timeout) {
             this._leaveRoom(peer);
             return;
         }
 
         this._send(peer, { type: 'ping' });
 
-        peer.timerId = setTimeout(() => this._keepAlive(peer), timeout);
+        if (!peer.closed) peer.timerId = setTimeout(() => this._keepAlive(peer),
+            Math.min(timeout, 2 * timeout - (Date.now() - peer.lastBeat)));
     }
 
     _cancelKeepAlive(peer) {
         if (peer && peer.timerId) {
             clearTimeout(peer.timerId);
+            peer.timerId = 0;
         }
     }
 }
@@ -181,6 +216,10 @@ class Peer {
     constructor(socket, request) {
         // set socket
         this.socket = socket;
+        this.connectionId = Peer.uuid();
+        this.connections = new Set();
+        this.routes = new Map();
+        this.closed = false;
 
 
         // set remote ip
@@ -213,12 +252,17 @@ class Peer {
         if (request.peerId) {
             this.id = request.peerId;
         } else {
-            this.id = request.headers.cookie.replace('peerid=', '');
+            this.id = Peer.cookieId(request.headers.cookie);
         }
     }
 
     toString() {
         return `<Peer id=${this.id} ip=${this.ip} rtcSupported=${this.rtcSupported}>`
+    }
+
+    static cookieId(cookie = '') {
+        const match = cookie.match(/(?:^|;\s*)peerid=([a-f0-9-]{36})(?:;|$)/i);
+        return match && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(match[1]) ? match[1] : null;
     }
 
     _setName(req) {

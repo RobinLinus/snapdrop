@@ -58,6 +58,55 @@ function setup() {
     return { ...context, connections, errors, sent, events, timers, server: { send(message) { sent.push(message); } } };
 }
 
+test('sessions from two tabs of one peer negotiate independently and replies retain their destination', async () => {
+    const t = setup();
+    let next = 0;
+    t.server.nextSessionId = () => 'local:' + (++next);
+    const manager = new t.PeersManager(t.server);
+    for (const session of ['tab-one:1', 'tab-two:1']) {
+        manager._onMessage({ sender: 'phone', senderSession: session.split(':')[0], sessionId: session,
+            sdp: { type: 'offer', sdp: session } });
+    }
+    await Promise.all([...manager._sessions.values()].map(peer => peer._operations));
+    assert.equal(t.connections.length, 2);
+    assert.equal(manager._sessions.size, 2);
+    for (const message of t.sent.filter(message => message.sdp)) {
+        assert.equal(message.to, 'phone');
+        assert.equal(message.toSession, message.sessionId.split(':')[0]);
+    }
+    const first = manager.peers.phone;
+    manager._onMessage({ sender: 'phone', sessionId: 'tab-one:1', disconnected: true });
+    assert.equal(first._closed, true);
+    assert.equal(manager._sessions.size, 1);
+    assert.equal(manager.peers.phone._signalId, 'tab-two:1');
+    manager._onMessage({ sender: 'phone', sessionId: 'tab-one:1', sdp: { type: 'offer', sdp: 'late' } });
+    assert.equal(t.connections.length, 2);
+    manager._onPeerLeft('phone');
+    assert.equal(manager._sessions.size, 0);
+    assert.ok(t.connections.every(connection => connection.signalingState === 'closed'));
+});
+
+test('a departing tab restarts only its session on the remaining peer, while self is never connected', async () => {
+    const t = setup();
+    let next = 0;
+    t.server.nextSessionId = () => 'local:' + (++next);
+    const manager = new t.PeersManager(t.server);
+    t.window.dispatchEvent({ type: 'peer-identity', detail: 'me' });
+    manager._onPeers([{ id: 'me', rtcSupported: true }, { id: 'phone', rtcSupported: true }]);
+    assert.deepEqual(Object.keys(manager.peers), ['phone']);
+    const old = manager.peers.phone;
+    await old._operations;
+    manager._onMessage({ sender: 'phone', sessionId: old._signalId, disconnected: true });
+    const replacement = manager.peers.phone;
+    assert.notEqual(replacement, old);
+    assert.equal(old._closed, true);
+    manager._onMessage({ sender: 'me', sessionId: 'self', sdp: { type: 'offer', sdp: 'self' } });
+    assert.equal(manager.peers.me, undefined);
+    await replacement._operations;
+    assert.equal(t.sent.at(-1).sessionId, replacement._signalId);
+    assert.equal(t.errors.length, 0);
+});
+
 test('repeated sends and refreshes during startup produce only one offer and channel', async () => {
     const t = setup();
     const peer = new t.RTCPeer(t.server, 'peer');

@@ -71,3 +71,25 @@ test('leaving during a reconnect delay cancels the background reconnect', () => 
     t.window.dispatchEvent({ type: 'pageshow', persisted: true });
     assert.equal(t.sockets.length, 2);
 });
+
+test('the client learns its identity before discovery and rejects self discovery and signaling', () => {
+    const t = setup();
+    const socket = t.sockets[0];
+    socket.readyState = 1;
+    const received = [];
+    for (const type of ['peer-identity', 'peers', 'peer-joined', 'signal']) {
+        t.window.addEventListener(type, event => received.push({ type, detail: event.detail }));
+    }
+    function message(value) { socket.onmessage({ data: JSON.stringify(value) }); }
+    message({ type: 'display-name', message: { id: 'phone', connectionId: 'socket-1', displayName: 'Coral iPhone' } });
+    message({ type: 'peers', peers: [{ id: 'phone' }, { id: 'mac' }] });
+    message({ type: 'peer-joined', peer: { id: 'phone' } });
+    message({ type: 'signal', sender: 'phone' });
+    assert.equal(received[0].type, 'peer-identity');
+    assert.deepEqual(Array.from(received[1].detail, peer => peer.id), ['mac']);
+    assert.equal(received.length, 2);
+    t.connection.send({ type: 'signal', to: 'phone' });
+    assert.equal(socket.sent.length, 0);
+    assert.equal(t.connection.nextSessionId(), 'socket-1:1');
+    assert.equal(t.connection.nextSessionId(), 'socket-1:2');
+});

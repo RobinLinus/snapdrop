@@ -16,6 +16,10 @@ Events.on('display-name', e => {
 class PeersUI {
 
     constructor() {
+        Events.on('peer-identity', e => {
+            this._selfId = e.detail;
+            this._onPeerLeft(this._selfId);
+        });
         Events.on('peer-joined', e => this._onPeerJoined(e.detail));
         Events.on('peer-left', e => this._onPeerLeft(e.detail));
         Events.on('peers', e => this._onPeers(e.detail));
@@ -24,6 +28,7 @@ class PeersUI {
     }
 
     _onPeerJoined(peer) {
+        if (peer.id === this._selfId) return;
         if ($(peer.id)) return; // peer already exists
         const peerUI = new PeerUI(peer);
         $$('x-peers').appendChild(peerUI.$el);

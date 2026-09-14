@@ -5,6 +5,7 @@ console.log('RTC diagnostics enabled (v1)');
 class ServerConnection {
 
     constructor() {
+        this._sessionCounter = 0;
         this._connect();
         Events.on('beforeunload', e => this._disconnect());
         Events.on('pagehide', e => this._disconnect());
@@ -33,21 +34,24 @@ class ServerConnection {
         console.log('WS:', msg);
         switch (msg.type) {
             case 'peers':
-                Events.fire('peers', msg.peers);
+                Events.fire('peers', msg.peers.filter(peer => peer.id !== this._selfId));
                 break;
             case 'peer-joined':
-                Events.fire('peer-joined', msg.peer);
+                if (msg.peer.id !== this._selfId) Events.fire('peer-joined', msg.peer);
                 break;
             case 'peer-left':
                 Events.fire('peer-left', msg.peerId);
                 break;
             case 'signal':
-                Events.fire('signal', msg);
+                if (msg.sender !== this._selfId) Events.fire('signal', msg);
                 break;
             case 'ping':
                 this.send({ type: 'pong' });
                 break;
             case 'display-name':
+                this._selfId = msg.message.id;
+                this._connectionId = msg.message.connectionId;
+                if (this._selfId) Events.fire('peer-identity', this._selfId);
                 Events.fire('display-name', msg);
                 break;
             default:
@@ -56,8 +60,13 @@ class ServerConnection {
     }
 
     send(message) {
+        if (message.to && message.to === this._selfId) return;
         if (!this._isConnected()) return;
         this._socket.send(JSON.stringify(message));
+    }
+
+    nextSessionId() {
+        return this._connectionId ? this._connectionId + ':' + (++this._sessionCounter) : undefined;
     }
 
     _endpoint() {
@@ -238,8 +247,9 @@ class Peer {
 
 class RTCPeer extends Peer {
 
-    constructor(serverConnection, peerId) {
+    constructor(serverConnection, peerId, sessionId) {
         super(serverConnection, peerId);
+        this._signalId = sessionId || (serverConnection.nextSessionId && serverConnection.nextSessionId());
         this._operations = Promise.resolve();
         this._closed = false;
         if (peerId) this._connect(peerId, true);
@@ -540,6 +550,8 @@ class RTCPeer extends Peer {
         signal.reversed = !!this._reversed;
         signal.type = 'signal';
         signal.to = this._peerId;
+        if (this._signalId) signal.sessionId = this._signalId;
+        if (this._remoteSession) signal.toSession = this._remoteSession;
         this._server.send(signal);
     }
 
@@ -573,39 +585,82 @@ class PeersManager {
 
     constructor(serverConnection) {
         this.peers = {};
+        // One visible peer can have independent transfers with several of its tabs.
+        this._sessions = new Map();
+        this._retiredSessions = new Set();
+        this._peerInfo = {};
         this._server = serverConnection;
+        Events.on('peer-identity', e => {
+            this._selfId = e.detail;
+            this._onPeerLeft(this._selfId);
+        });
         Events.on('signal', e => this._onMessage(e.detail));
         Events.on('peers', e => this._onPeers(e.detail));
         Events.on('files-selected', e => this._onFilesSelected(e.detail));
         Events.on('send-text', e => this._onSendText(e.detail));
         Events.on('peer-left', e => this._onPeerLeft(e.detail));
         // The same device ID can return with a new page and fresh ICE state.
-        Events.on('peer-joined', e => this._onPeerLeft(e.detail.id));
+        Events.on('peer-joined', e => {
+            if (e.detail.id === this._selfId) return;
+            this._onPeerLeft(e.detail.id);
+            this._peerInfo[e.detail.id] = e.detail;
+        });
         Events.on('pagehide', () => this._clearPeers());
         Events.on('retry-failed-connections', () => {
-            Object.values(this.peers).forEach(peer => {
+            new Set([...Object.values(this.peers), ...this._sessions.values()]).forEach(peer => {
                 if (peer instanceof RTCPeer) peer.retryConnection();
             });
         });
     }
 
     _onMessage(message) {
-        if (!this.peers[message.sender]) {
-            this.peers[message.sender] = new RTCPeer(this._server);
+        if (message.sender === this._selfId) return;
+        const key = message.sender + '/' + (message.sessionId || '');
+        if (this._retiredSessions.has(key)) return;
+        let peer = message.sessionId ? this._sessions.get(key) : this.peers[message.sender];
+        if (message.disconnected) {
+            if (peer) this._removeSession(message.sender, peer);
+            return;
         }
-        this.peers[message.sender].onServerMessage(message);
+        if (!peer) {
+            peer = new RTCPeer(this._server, undefined, message.sessionId);
+            peer._peerId = message.sender;
+            if (!this.peers[message.sender]) this.peers[message.sender] = peer;
+            if (message.sessionId) this._sessions.set(key, peer);
+        }
+        peer._remoteSession = message.senderSession;
+        peer.onServerMessage(message);
     }
 
     _onPeers(peers) {
         // A fresh signaling session needs fresh connections, including retry roles.
         this._clearPeers();
         peers.forEach(peer => {
-            if (window.isRtcSupported && peer.rtcSupported) {
-                this.peers[peer.id] = new RTCPeer(this._server, peer.id);
-            } else {
-                this.peers[peer.id] = new WSPeer(this._server, peer.id);
-            }
+            if (peer.id === this._selfId) return;
+            this._peerInfo[peer.id] = peer;
+            this._createPeer(peer);
         })
+    }
+
+    _createPeer(info) {
+        const peer = window.isRtcSupported && info.rtcSupported
+            ? new RTCPeer(this._server, info.id) : new WSPeer(this._server, info.id);
+        this.peers[info.id] = peer;
+        if (peer._signalId) this._sessions.set(info.id + '/' + peer._signalId, peer);
+    }
+
+    _removeSession(peerId, peer) {
+        peer.close();
+        for (const [key, session] of this._sessions) {
+            if (session !== peer) continue;
+            this._sessions.delete(key);
+            this._retiredSessions.add(key);
+        }
+        if (this.peers[peerId] !== peer) return;
+        delete this.peers[peerId];
+        const remaining = [...this._sessions.values()].find(session => session._peerId === peerId);
+        if (remaining) this.peers[peerId] = remaining;
+        else if (this._peerInfo[peerId]) this._createPeer(this._peerInfo[peerId]);
     }
 
     sendTo(peerId, message) {
@@ -622,12 +677,21 @@ class PeersManager {
 
     _clearPeers() {
         Object.keys(this.peers).forEach(peerId => this._onPeerLeft(peerId));
+        this._retiredSessions.clear();
+        this._peerInfo = {};
     }
 
     _onPeerLeft(peerId) {
         const peer = this.peers[peerId];
         delete this.peers[peerId];
+        delete this._peerInfo[peerId];
         if (peer && peer.close) peer.close();
+        for (const [key, session] of this._sessions) {
+            if (session._peerId !== peerId) continue;
+            session.close();
+            this._sessions.delete(key);
+            this._retiredSessions.add(key);
+        }
     }
 
 }

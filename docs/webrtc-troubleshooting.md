@@ -121,10 +121,21 @@ signaling again on `pageshow`, following the [WebSocket lifecycle guidance][ws-l
 A fresh peer list rebuilds the connection objects; a rejoining device invalidates
 its old connection and reversed-attempt flag before sending a new offer.
 
-On the server, socket cleanup must check the socket's identity, not just the
-persistent device ID. A delayed close, disconnect, or heartbeat from an old page
-must not remove its replacement. Reopening does not allocate a new device ID,
-and a device is not included in its own peer list.
+Tabs with the same identity cookie share one discoverable peer and name. The
+server tracks their sockets separately, announces the first arrival and last
+departure, and excludes the peer itself from discovery and signaling. The client
+also learns its own ID before processing discovery and filters self entries.
+
+A close, socket error, explicit disconnect, or missed-heartbeat deadline terminates
+only that socket and cancels its timer. The heartbeat deadline is 60 seconds after
+the last pong. Delayed callbacks cannot evict a newer socket or revive a dead one.
+Healthy tabs remain discoverable when another tab closes.
+
+Signaling carries a connection-specific destination and a negotiation ID, so
+several tabs can transfer independently under the same visible device identity.
+Replies stay with their initiating tab. When a socket disappears, its signaling
+routes are removed; affected connections can reconnect to another remaining tab.
+Names and device models are never used to merge separate browser identities.
 
 `connectionCheck: "unsupported"` means the other endpoint did not advertise the
 new round-trip check, usually because it still has an older client loaded. It
