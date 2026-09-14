@@ -6,6 +6,8 @@ let done = false;
 const reverse = new URLSearchParams(location.search).has('reverse');
 const unresponsive = new URLSearchParams(location.search).has('unresponsive');
 const recovery = new URLSearchParams(location.search).has('recovery');
+const dropped = new URLSearchParams(location.search).has('dropped');
+let lostConnection = false;
 let restarted = false;
 const fail = error => { done = true; result.textContent = 'FAIL: ' + error; };
 window.addEventListener('unhandledrejection', e => fail(e.reason));
@@ -34,7 +36,7 @@ Events.on('file-received', async event => {
   const actual = new Uint8Array(await event.detail.blob.arrayBuffer());
   if (actual.length !== bytes.length || actual.some((byte,i) => byte !== bytes[i])) throw Error('File bytes differ');
   done = true;
-  result.textContent = 'PASS: ' + (unresponsive ? 'unanswered probe triggered automatic reversed retry; ' : reverse ? 'reversed offerer/answerer roles without reloading; ' : recovery ? 'receiver reestablished the connection without reloading; ' : 'one connection after 20 refreshes; ') + 'verified a data-channel round trip on both endpoints; transferred 1,200,000 bytes with exact content match.';
+  result.textContent = 'PASS: ' + (dropped ? 'send after connection loss preserved reversed roles; ' : unresponsive ? 'unanswered probe triggered automatic reversed retry; ' : reverse ? 'reversed offerer/answerer roles without reloading; ' : recovery ? 'receiver reestablished the connection without reloading; ' : 'one connection after 20 refreshes; ') + 'verified a data-channel round trip on both endpoints; transferred 1,200,000 bytes with exact content match.';
   caller.close(); callee.close();
  } catch(error) { fail(error); }
 });
@@ -42,12 +44,19 @@ const timer = setInterval(() => {
  if (done) return clearInterval(timer);
  if (caller._isConnected() && callee._isConnected()) {
   if (unresponsive && (!caller._reversed || !callee._reversed)) return fail('Unresponsive connection was not retried');
-  if (reverse && !restarted) {
+  if ((reverse || dropped) && !restarted) {
    restarted = true;
    callee._reverseRoles();
    return;
   }
-  if (reverse && (caller._isCaller || !callee._isCaller)) return fail('Roles did not swap');
+  if ((reverse || dropped) && (caller._isCaller || !callee._isCaller)) return fail('Roles did not swap');
+  if (dropped && !lostConnection) {
+   lostConnection = true;
+   caller._failConnection(caller._conn, 'simulated-connection-loss');
+   callee._failConnection(callee._conn, 'simulated-connection-loss');
+   caller.sendFiles([new File([bytes], 'test.bin')]);
+   return;
+  }
   if (recovery && !restarted) {
    restarted = true;
    callee._closeConnection();

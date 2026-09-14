@@ -29,7 +29,7 @@ class ConnectionLog {
     }
 }
 // Bump with the service-worker cache version for each client release.
-ConnectionLog.clientVersion = 'v16';
+ConnectionLog.clientVersion = 'v17';
 ConnectionLog.page = Math.random().toString(36).slice(2, 10);
 ConnectionLog.write('client-start', { userAgent: typeof navigator === 'undefined' ? undefined : navigator.userAgent });
 
@@ -459,7 +459,10 @@ class RTCPeer extends Peer {
             if (this._conn !== conn) return;
             log('channel-close');
             if (!this._connectedOnce) this._failConnection(conn, 'channel-closed-before-verification');
-            else this._closeConnection();
+            else {
+                this._closeConnection();
+                this._needsRecovery = true;
+            }
         };
         channel.onerror = event => {
             if (this._conn !== conn) return;
@@ -490,8 +493,8 @@ class RTCPeer extends Peer {
         this._reportDiagnostics(conn, reason);
         if (!this._connectedOnce && !this._reversed && this._supportsReversal) return this._reverseRoles();
         this._closeConnection();
-        this._needsRecovery = !this._connectedOnce;
-        if (this._needsRecovery) Events.fire('connection-failed', { peerId: this._peerId });
+        this._needsRecovery = true;
+        if (!this._connectedOnce) Events.fire('connection-failed', { peerId: this._peerId });
         Events.fire('notify-user', 'Could not connect to this device. Check local network access and try again.');
     }
 
@@ -639,11 +642,15 @@ class RTCPeer extends Peer {
     }
 
     refresh() {
+        // A send after failure must restart both ends with their existing roles.
+        if (this._needsRecovery) return this.retryConnection();
         this._connect(this._peerId, true);
     }
 
     _isConnected() {
-        return this._connectedOnce && this._channel && this._channel.readyState === 'open';
+        return this._connectedOnce && this._conn
+            && !['disconnected', 'failed', 'closed'].includes(this._conn.connectionState)
+            && this._channel && this._channel.readyState === 'open';
     }
 }
 

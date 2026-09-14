@@ -332,6 +332,70 @@ test('losing an established channel does not trigger an automatic role swap', as
     assert.equal(t.events.filter(e => e.type === 'connection-failed').length, 0);
 });
 
+for (const retryFrom of ['caller', 'callee', 'both']) {
+    test(`a send after a verified connection fails preserves roles when retried by ${retryFrom}`, async () => {
+        const t = setup(), pending = [];
+        const callee = new t.RTCPeer({ send: message => pending.push(['caller', message]) });
+        const caller = new t.RTCPeer({ send: message => pending.push(['callee', message]) }, 'callee');
+        const peers = { caller, callee };
+        async function relay() {
+            for (let round = 0; round < 10; round++) {
+                await Promise.all([caller._operations, callee._operations]);
+                if (!pending.length) return;
+                for (const [target, message] of pending.splice(0)) {
+                    peers[target].onServerMessage({ ...message, sender: target === 'caller' ? 'callee' : 'caller' });
+                }
+            }
+            assert.fail('Signaling did not settle');
+        }
+        await relay();
+        caller._reverseRoles();
+        await relay();
+        const old = [caller._conn, callee._conn];
+        for (const peer of [caller, callee]) {
+            if (!peer._channel) {
+                const channel = peer._conn.createDataChannel();
+                peer._conn.ondatachannel({ channel });
+            }
+            peer._channel.readyState = 'open';
+            peer._conn.connectionState = 'connected';
+            peer._confirmConnection(peer._conn, 'passed');
+            peer._conn.connectionState = 'disconnected';
+            assert.equal(peer._isConnected(), false);
+            peer.sendFiles([{}]);
+            assert.equal(peer._busy, false);
+            peer._conn.connectionState = 'connected';
+            assert.equal(peer._isConnected(), true);
+            failConnection(peer);
+            assert.equal(peer._needsRecovery, true);
+        }
+        if (retryFrom !== 'callee') caller.sendFiles([{}]);
+        if (retryFrom !== 'caller') callee.sendFiles([{}]);
+        await relay();
+        assert.equal(caller._isCaller, false);
+        assert.equal(callee._isCaller, true);
+        assert.equal(caller._conn.localDescription.type, 'answer');
+        assert.equal(callee._conn.localDescription.type, 'offer');
+        assert.ok(old.every(conn => conn.signalingState === 'closed'));
+        assert.equal(caller._connectionCheck, 'connecting');
+        assert.equal(callee._connectionCheck, 'connecting');
+        assert.equal(t.errors.length, 0);
+    });
+}
+
+test('a verified channel close allows a coordinated retry on the next send', async () => {
+    const t = await checkablePeer();
+    t.channel.readyState = 'open';
+    t.peer._confirmConnection(t.peer._conn, 'passed');
+    t.channel.onclose();
+    assert.equal(t.peer._needsRecovery, true);
+    assert.equal(t.peer._conn, null);
+    t.peer.sendFiles([{}]);
+    await t.peer._operations;
+    assert.equal(t.sent.filter(message => message.restart).length, 1);
+    assert.equal(t.peer._connectionCheck, 'connecting');
+});
+
 
 test('legacy peers go straight to recovery instead of receiving an unsupported role swap', async () => {
     const t = setup();

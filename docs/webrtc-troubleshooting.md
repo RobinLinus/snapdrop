@@ -43,7 +43,12 @@ WebSocket signaling path. No microphone or file access is involved.
 
 The console reports `reason: "connection-verified"` and `connectionCheck: "passed"`
 on success. This is a startup check, not a continuous heartbeat or a guarantee
-that later transfers cannot fail. Older clients use channel-open readiness and
+that later transfers cannot fail. New sends are blocked while the browser reports
+`disconnected` or `failed`, even if the data channel still says `open`. After a
+previously verified connection fails or its channel closes, the next send starts
+a coordinated retry that preserves the roles that worked and verifies the new
+channel. The user sends again after it becomes ready; content is not replayed.
+Older clients use channel-open readiness and
 report `connectionCheck: "unsupported"`. Timers may run late in background tabs.
 
 If connecting or verification times out, or the connection fails before it is
@@ -180,6 +185,17 @@ events on both endpoints. Diagnostics include `sctp`, the current `channel` (or
 `null` if none was delivered), and `dataChannels` message/byte counters. A probe
 send means the browser accepted it into its buffer; only the matching reply
 proves the round trip. These events log probe IDs, never file or text payloads.
+
+A subsequent paired capture showed successful checks on both Macs, followed by
+a received text message, then ICE `disconnected` and `failed`. The selected IPv6
+pair stopped receiving connectivity-check replies. That is loss of a previously
+working path, not a missing channel-open event or proof of an SDP race. Logs alone
+do not identify whether the cause is in the browser, OS, or network. Client v17
+fixes a separate recovery bug exposed by that capture: sending after failure
+previously made the sender an offerer again, discarding the successful role swap.
+`tests/rtc-transfer.html?dropped` simulates loss after a verified reversed connection
+and checks that a subsequent send initiates recovery with the roles preserved,
+then transfers an exact 1,200,000-byte file after verification.
 
 ### Capturing both endpoints
 
