@@ -1,0 +1,14 @@
+{
+  "name": "snapdrop",
+  "private": true,
+  "scripts": {
+    "test": "cargo build --locked --manifest-path server/Cargo.toml && node --test tests/*.test.cjs",
+    "vendor": "node scripts/vendor-msgpack.cjs",
+    "test:browser": "cargo build --locked --manifest-path server/Cargo.toml && node tests/browser-relay.cjs"
+  },
+  "devDependencies": {
+    "@msgpack/msgpack": "^3.1.3",
+    "playwright": "1.62.1",
+    "ws": "^8.21.0"
+  }
+}

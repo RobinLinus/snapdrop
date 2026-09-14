@@ -6,7 +6,7 @@
 #### Snapdrop is built with the following awesome technologies:
 * Vanilla HTML5 / ES6 / CSS3 frontend
 * [WebRTC](http://webrtc.org/) / [WebSockets](http://www.websocket.org/)
-* [NodeJS](https://nodejs.org/en/) backend
+* [Rust](https://www.rust-lang.org/) relay with Serde/MessagePack WebSockets
 * [Progressive Web App](https://wikipedia.org/wiki/Progressive_Web_App)
 
 

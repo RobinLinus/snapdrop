@@ -26,10 +26,12 @@ For the explanation, alternatives, and diagnostic steps, see
 [WebRTC troubleshooting](webrtc-troubleshooting.md).
 
 ### What about the connection? Is it a P2P-connection directly from device to device or is there any third-party-server?
-It uses a P2P connection if WebRTC is supported by the browser. WebRTC needs a Signaling Server, but it is only used to establish a connection and is not involved in the file transfer.
+Files use a direct, encrypted WebRTC connection. Text messages and the signaling needed to establish file transfers are relayed through the server over WebSockets. Text does not wait for a WebRTC connection.
 
 ### What about privacy? Will files be saved on third-party-servers?
 None of your files are ever sent to any server. Files are sent only between peers. Snapdrop doesn't even use a database. If you are curious have a look [at the Server](https://github.com/RobinLinus/snapdrop/blob/master/server/). Even if Snapdrop was able to view the files being transfered, WebRTC encrypts the files on transit, so the server would be unable to read them.
+
+Text messages are relayed in memory and are not stored or logged by the application. HTTPS/WSS encrypts text in transit to and from the server; text is not end-to-end encrypted and the server operator can read it.
 
 ### What about security? Are my files encrypted while being sent between the computers?
 Yes. Your files are sent using WebRTC, which encrypts them on transit.

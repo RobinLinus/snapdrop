@@ -1,13 +1,13 @@
-version: "3"
 services:
-  node:
-    image: "node:lts-alpine"
-    user: "node"
-    working_dir: /home/node/app
-    volumes:
-      - ./server/:/home/node/app
-    command: ash -c "npm i && node index.js"
+  relay:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      TRUSTED_PROXIES: 172.30.0.0/24
   nginx:
+    depends_on:
+      - relay
     build:
       context: ./docker/
       dockerfile: nginx-with-openssl.Dockerfile
@@ -23,3 +23,8 @@ services:
     env_file: ./docker/fqdn.env
     entrypoint: /mnt/openssl/create.sh
     command: ["nginx", "-g", "daemon off;"]
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

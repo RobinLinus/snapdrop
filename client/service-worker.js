@@ -1,8 +1,10 @@
-var CACHE_NAME = 'snapdrop-cache-v17';
+var CACHE_NAME = 'snapdrop-cache-v18';
 var urlsToCache = [
   'index.html',
   './',
   'styles.css',
+  'vendor/msgpack.min.js',
+  'scripts/protocol.js',
   'scripts/network.js',
   'scripts/ui.js',
   'scripts/clipboard.js',

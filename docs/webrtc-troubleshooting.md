@@ -118,6 +118,10 @@ Chrome's team [discouraged requesting media permission solely to bypass mDNS][di
 because it should normally be unnecessary and can confuse users. Keep the
 workaround optional and explain why a file-sharing page asks for microphone access.
 
+Text messages use the WebSocket relay and do not require ICE or a data channel.
+File connections are created when a file is selected. Clients using the previous
+JSON protocol must reload after this release.
+
 ## Reopening a page on mobile
 
 A page restored from the browser's back/forward cache retains its JavaScript
@@ -131,15 +135,16 @@ server tracks their sockets separately, announces the first arrival and last
 departure, and excludes the peer itself from discovery and signaling. The client
 also learns its own ID before processing discovery and filters self entries.
 
-A close, socket error, explicit disconnect, or missed-heartbeat deadline terminates
-only that socket and cancels its timer. The heartbeat deadline is 60 seconds after
+A close, socket error, or missed-heartbeat deadline terminates only that socket.
+The server sends native WebSocket pings every 30 seconds. The heartbeat deadline is 60 seconds after
 the last pong. Delayed callbacks cannot evict a newer socket or revive a dead one.
 Healthy tabs remain discoverable when another tab closes.
 
 Signaling carries a connection-specific destination and a negotiation ID, so
 several tabs can transfer independently under the same visible device identity.
-Replies stay with their initiating tab. When a socket disappears, its signaling
-routes are removed; affected connections can reconnect to another remaining tab.
+Replies stay with their initiating tab. The server routes only by connection ID; negotiation IDs stay inside opaque
+client payloads. When a socket disappears, clients retire affected connections.
+A subsequent transfer can target another remaining tab.
 Names and device models are never used to merge separate browser identities.
 
 `connectionCheck: "unsupported"` means the other endpoint did not advertise the

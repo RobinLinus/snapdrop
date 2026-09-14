@@ -46,6 +46,7 @@ function setup() {
         window: { URL: {}, RTCPeerConnection: Connection,
             addEventListener(type, callback) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(callback); },
             dispatchEvent(event) { events.push(event); for (const callback of listeners.get(event.type) || []) callback(event); } },
+        TextEncoder,
         CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
         console: { log(...args) { logs.push(args); }, error(error) { errors.push(error); } },
         setTimeout(callback, delay) { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
@@ -86,7 +87,7 @@ test('sessions from two tabs of one peer negotiate independently and replies ret
     assert.ok(t.connections.every(connection => connection.signalingState === 'closed'));
 });
 
-test('a departing tab restarts only its session on the remaining peer, while self is never connected', async () => {
+test('a departing tab replaces only its session and defers the next connection until needed', async () => {
     const t = setup();
     let next = 0;
     t.server.nextSessionId = () => 'local:' + (++next);
@@ -102,6 +103,8 @@ test('a departing tab restarts only its session on the remaining peer, while sel
     assert.equal(old._closed, true);
     manager._onMessage({ sender: 'me', sessionId: 'self', sdp: { type: 'offer', sdp: 'self' } });
     assert.equal(manager.peers.me, undefined);
+    assert.equal(t.connections.length, 0);
+    replacement.refresh();
     await replacement._operations;
     assert.equal(t.sent.at(-1).sessionId, replacement._signalId);
     assert.equal(t.errors.length, 0);
@@ -452,6 +455,8 @@ test('an incoming already-open channel verifies without an open event and ignore
 
 test('open channel must echo a probe before sending files; reply clears the deadline', async () => {
     const t = await checkablePeer();
+    let dispatched = 0;
+    t.Peer.prototype.sendFiles = files => { dispatched += files.length; };
     t.channel.readyState = 'open';
     t.channel.onopen();
     assert.equal(t.peer._isConnected(), false);
@@ -465,6 +470,7 @@ test('open channel must echo a probe before sending files; reply clears the dead
     t.channel.onmessage({ data: JSON.stringify({ type: 'connection-check-reply', id: probe.id }) });
     assert.equal(t.peer._isConnected(), true);
     assert.equal(t.peer._connectionCheck, 'passed');
+    assert.equal(dispatched, 1);
     assert.equal(t.timers.size, 0);
     t.channel.onmessage({ data: JSON.stringify({ type: 'connection-check', id: 42 }) });
     assert.equal(t.channel.sent[1].type, 'connection-check-reply');

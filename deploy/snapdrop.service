@@ -1,0 +1,22 @@
+[Unit]
+Description=Snapdrop Rust relay
+After=network.target
+
+[Service]
+User=snapdrop
+Group=snapdrop
+ExecStart=/usr/local/bin/snapdrop-server
+Environment=HOST=127.0.0.1 PORT=3000 TRUSTED_PROXIES=127.0.0.1/32,::1/128
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

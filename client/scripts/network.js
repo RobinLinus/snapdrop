@@ -29,7 +29,7 @@ class ConnectionLog {
     }
 }
 // Bump with the service-worker cache version for each client release.
-ConnectionLog.clientVersion = 'v17';
+ConnectionLog.clientVersion = 'v18';
 ConnectionLog.page = Math.random().toString(36).slice(2, 10);
 ConnectionLog.write('client-start', { userAgent: typeof navigator === 'undefined' ? undefined : navigator.userAgent });
 
@@ -37,6 +37,7 @@ class ServerConnection {
 
     constructor() {
         this._sessionCounter = 0;
+        this._destinations = new Map();
         this._connect();
         Events.on('beforeunload', e => this._disconnect());
         Events.on('pagehide', e => this._disconnect());
@@ -61,23 +62,31 @@ class ServerConnection {
     }
 
     _onMessage(msg) {
-        msg = JSON.parse(msg);
-        if (msg.type !== 'ping') ConnectionLog.write('ws-receive', ConnectionLog.message(msg));
+        try { msg = SnapdropProtocol.decode(msg); }
+        catch (error) { ConnectionLog.write('ws-protocol-error', { name: error.name }); return; }
+        ConnectionLog.write('ws-receive', ConnectionLog.message(msg));
         switch (msg.type) {
             case 'peers':
+                this._destinations = new Map(msg.peers.map(peer => [peer.id, peer.connectionId]));
                 Events.fire('peers', msg.peers.filter(peer => peer.id !== this._selfId));
                 break;
             case 'peer-joined':
+                this._destinations.set(msg.peer.id, msg.peer.connectionId);
                 if (msg.peer.id !== this._selfId) Events.fire('peer-joined', msg.peer);
                 break;
+            case 'peer-updated':
+                this._destinations.set(msg.peer.id, msg.peer.connectionId);
+                Events.fire('peer-updated', msg);
+                break;
             case 'peer-left':
+                this._destinations.delete(msg.peerId);
                 Events.fire('peer-left', msg.peerId);
                 break;
             case 'signal':
                 if (msg.sender !== this._selfId) Events.fire('signal', msg);
                 break;
-            case 'ping':
-                this.send({ type: 'pong' });
+            case 'text':
+                if (msg.sender !== this._selfId) Events.fire('text-received', { sender: msg.sender, text: msg.text });
                 break;
             case 'display-name':
                 this._selfId = msg.message.id;
@@ -91,10 +100,18 @@ class ServerConnection {
     }
 
     send(message) {
-        if (message.to && message.to === this._selfId) return;
-        if (!this._isConnected()) return;
-        this._socket.send(JSON.stringify(message));
-        if (message.type !== 'pong') ConnectionLog.write('ws-send', ConnectionLog.message(message));
+        const recipient = message.toSession || this._destinations.get(message.to);
+        if (!this._isConnected() || !recipient || message.to === this._selfId) return false;
+        try {
+            const data = SnapdropProtocol.encode(recipient, message);
+            if (this._socket.bufferedAmount + data.byteLength > 512 * 1024) return false;
+            this._socket.send(data);
+            ConnectionLog.write('ws-send', ConnectionLog.message(message));
+            return true;
+        } catch (error) {
+            ConnectionLog.write('ws-send-error', { name: error.name });
+            return false;
+        }
     }
 
     nextSessionId() {
@@ -102,7 +119,6 @@ class ServerConnection {
     }
 
     _endpoint() {
-        // hack to detect if deployment or development environment
         const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
         const webrtc = window.isRtcSupported ? '/webrtc' : '/fallback';
         const url = protocol + '://' + location.host + location.pathname + 'server' + webrtc;
@@ -113,7 +129,6 @@ class ServerConnection {
         clearTimeout(this._reconnectTimer);
         const socket = this._socket;
         if (!socket) return;
-        this.send({ type: 'disconnect' });
         this._socket = null;
         socket.onclose = socket.onmessage = null;
         socket.close();
@@ -221,9 +236,6 @@ class Peer {
             case 'transfer-complete':
                 this._onTransferCompleted();
                 break;
-            case 'text':
-                this._onTextReceived(message);
-                break;
         }
     }
 
@@ -265,26 +277,16 @@ class Peer {
         this._dequeueFile();
         Events.fire('notify-user', 'File transfer completed.');
     }
-
-    sendText(text) {
-        const unescaped = btoa(unescape(encodeURIComponent(text)));
-        this.sendJSON({ type: 'text', text: unescaped });
-    }
-
-    _onTextReceived(message) {
-        const escaped = decodeURIComponent(escape(atob(message.text)));
-        Events.fire('text-received', { text: escaped, sender: this._peerId });
-    }
 }
 
 class RTCPeer extends Peer {
 
-    constructor(serverConnection, peerId, sessionId) {
+    constructor(serverConnection, peerId, sessionId, deferConnection = false) {
         super(serverConnection, peerId);
         this._signalId = sessionId || (serverConnection.nextSessionId && serverConnection.nextSessionId());
         this._operations = Promise.resolve();
         this._closed = false;
-        if (peerId) this._connect(peerId, true);
+        if (peerId && !deferConnection) this._connect(peerId, true);
     }
 
     _connect(peerId, isCaller) {
@@ -486,6 +488,9 @@ class RTCPeer extends Peer {
         this._connectedOnce = true;
         this._connectionCheck = result;
         this._reportDiagnostics(conn, result === 'passed' ? 'connection-verified' : 'channel-open');
+        const pending = this._pendingFiles;
+        this._pendingFiles = null;
+        if (pending) super.sendFiles(pending);
     }
 
     _failConnection(conn, reason) {
@@ -523,6 +528,7 @@ class RTCPeer extends Peer {
 
     close() {
         this._closed = true;
+        this._pendingFiles = null;
         this._closeConnection();
     }
 
@@ -594,19 +600,17 @@ class RTCPeer extends Peer {
         return report;
     }
 
-    _readyToSend() {
-        if (this._isConnected()) return true;
-        this.refresh();
-        Events.fire('notify-user', 'Device is not connected yet. Please try again when connected.');
-        return false;
-    }
-
     sendFiles(files) {
-        if (this._readyToSend()) super.sendFiles(files);
-    }
-
-    sendText(text) {
-        if (this._readyToSend()) super.sendText(text);
+        if (this._closed) return;
+        if (this._isConnected()) return super.sendFiles(files);
+        // Retain only an undispatched selection across negotiation/reversal.
+        const pending = this._needsRecovery ? [] : (this._pendingFiles || []);
+        if (pending.length + files.length > 64) {
+            Events.fire('notify-user', 'Please send at most 64 files at a time.');
+            return;
+        }
+        this._pendingFiles = [...pending, ...files];
+        this.refresh();
     }
 
     _send(message) {
@@ -672,6 +676,7 @@ class PeersManager {
         Events.on('files-selected', e => this._onFilesSelected(e.detail));
         Events.on('send-text', e => this._onSendText(e.detail));
         Events.on('peer-left', e => this._onPeerLeft(e.detail));
+        Events.on('peer-updated', e => this._onPeerUpdated(e.detail));
         // The same device ID can return with a new page and fresh ICE state.
         Events.on('peer-joined', e => {
             if (e.detail.id === this._selfId) return;
@@ -717,9 +722,21 @@ class PeersManager {
 
     _createPeer(info) {
         const peer = window.isRtcSupported && info.rtcSupported
-            ? new RTCPeer(this._server, info.id) : new WSPeer(this._server, info.id);
+            ? new RTCPeer(this._server, info.id, undefined, true) : new UnsupportedPeer();
+        peer._remoteSession = info.connectionId;
         this.peers[info.id] = peer;
         if (peer._signalId) this._sessions.set(info.id + '/' + peer._signalId, peer);
+    }
+
+    _onPeerUpdated(message) {
+        this._peerInfo[message.peer.id] = message.peer;
+        if (!message.departedConnection) return;
+        const sessions = new Set([...Object.values(this.peers), ...this._sessions.values()]);
+        for (const peer of sessions) {
+            if (peer._peerId === message.peer.id && peer._remoteSession === message.departedConnection) {
+                this._removeSession(message.peer.id, peer);
+            }
+        }
     }
 
     _removeSession(peerId, peer) {
@@ -741,11 +758,21 @@ class PeersManager {
     }
 
     _onFilesSelected(message) {
-        this.peers[message.to].sendFiles(message.files);
+        if (!this.peers[message.to] && this._peerInfo[message.to]) this._createPeer(this._peerInfo[message.to]);
+        const peer = this.peers[message.to];
+        if (peer) peer.sendFiles(message.files);
+        else Events.fire('notify-user', 'Device is offline. Please try again.');
     }
 
     _onSendText(message) {
-        this.peers[message.to].sendText(message.text);
+        if (typeof message.text !== 'string' || !message.text.trim()) return;
+        if (new TextEncoder().encode(message.text).byteLength > 16 * 1024) {
+            Events.fire('notify-user', 'Message is too long (maximum 16 KB).');
+            return;
+        }
+        if (!this._server.send({ type: 'text', to: message.to, text: message.text })) {
+            Events.fire('notify-user', 'Could not send the message. Please try again.');
+        }
     }
 
     _clearPeers() {
@@ -769,11 +796,9 @@ class PeersManager {
 
 }
 
-class WSPeer {
-    _send(message) {
-        message.to = this._peerId;
-        this._server.send(message);
-    }
+class UnsupportedPeer {
+    sendFiles() { Events.fire('notify-user', 'This browser does not support file transfers.'); }
+    close() {}
 }
 
 class FileChunker {
