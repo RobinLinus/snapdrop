@@ -113,6 +113,26 @@ Chrome's team [discouraged requesting media permission solely to bypass mDNS][di
 because it should normally be unnecessary and can confuse users. Keep the
 workaround optional and explain why a file-sharing page asks for microphone access.
 
+## Reopening a page on mobile
+
+A page restored from the browser's back/forward cache retains its JavaScript
+objects. Snapdrop closes signaling and peer connections on `pagehide` and opens
+signaling again on `pageshow`, following the [WebSocket lifecycle guidance][ws-lifecycle].
+A fresh peer list rebuilds the connection objects; a rejoining device invalidates
+its old connection and reversed-attempt flag before sending a new offer.
+
+On the server, socket cleanup must check the socket's identity, not just the
+persistent device ID. A delayed close, disconnect, or heartbeat from an old page
+must not remove its replacement. Reopening does not allocate a new device ID,
+and a device is not included in its own peer list.
+
+`connectionCheck: "unsupported"` means the other endpoint did not advertise the
+new round-trip check, usually because it still has an older client loaded. It
+is not a failed check. A final `channel-open` with ICE and DTLS both `connected`
+means the channel opened, but does not prove that a later file transfer succeeded.
+Load the updated client on both endpoints to get `connection-verified` diagnostics.
+A service-worker update does not replace JavaScript already running in a tab.
+
 ## Alternatives and limitations
 
 | Option | What it does and does not solve |
@@ -165,3 +185,5 @@ before testing a change to the signaling protocol.
 [restart]: https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/restartIce
 [ice]: https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.3
 [apple-network]: https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
+
+[ws-lifecycle]: https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_client_applications#working_with_the_bfcache

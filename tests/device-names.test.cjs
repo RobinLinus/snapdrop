@@ -156,3 +156,25 @@ test('departed peers release their names without renaming connected devices', ()
     reconnected.socket.emit('message', JSON.stringify({ type: 'disconnect' }));
     assert.equal(server._rooms[first.peer.ip], undefined);
 });
+
+
+test('late disconnect, close and heartbeat from the old socket cannot evict a reopened device', () => {
+    const { server, connect } = setup();
+    const observer = connect('observer');
+    const old = connect('phone');
+    const current = connect('phone');
+    const room = server._rooms[current.peer.ip];
+    const visible = current.socket.messages.find(message => message.type === 'peers').peers;
+    assert.ok(!visible.some(peer => peer.id === 'phone'));
+    observer.socket.messages.length = 0;
+    old.socket.emit('message', JSON.stringify({ type: 'disconnect' }));
+    old.socket.emit('close');
+    old.peer.lastBeat = 1;
+    server._keepAlive(old.peer);
+    assert.equal(room.phone, current.peer);
+    assert.equal(current.socket.terminated, undefined);
+    assert.equal(observer.socket.messages.filter(message => message.type === 'peer-left').length, 0);
+    current.socket.emit('close');
+    assert.equal(room.phone, undefined);
+    assert.equal(observer.socket.messages.filter(message => message.type === 'peer-left').length, 1);
+});

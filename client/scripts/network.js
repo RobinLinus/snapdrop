@@ -8,6 +8,7 @@ class ServerConnection {
         this._connect();
         Events.on('beforeunload', e => this._disconnect());
         Events.on('pagehide', e => this._disconnect());
+        Events.on('pageshow', () => this._connect());
         document.addEventListener('visibilitychange', e => this._onVisibilityChange());
     }
 
@@ -17,8 +18,12 @@ class ServerConnection {
         const ws = new WebSocket(this._endpoint());
         ws.binaryType = 'arraybuffer';
         ws.onopen = e => console.log('WS: server connected');
-        ws.onmessage = e => this._onMessage(e.data);
-        ws.onclose = e => this._onDisconnect();
+        ws.onmessage = e => { if (this._socket === ws) this._onMessage(e.data); };
+        ws.onclose = () => {
+            if (this._socket !== ws) return;
+            this._socket = null;
+            this._onDisconnect();
+        };
         ws.onerror = e => console.error(e);
         this._socket = ws;
     }
@@ -64,9 +69,13 @@ class ServerConnection {
     }
 
     _disconnect() {
+        clearTimeout(this._reconnectTimer);
+        const socket = this._socket;
+        if (!socket) return;
         this.send({ type: 'disconnect' });
-        this._socket.onclose = null;
-        this._socket.close();
+        this._socket = null;
+        socket.onclose = socket.onmessage = null;
+        socket.close();
     }
 
     _onDisconnect() {
@@ -570,6 +579,9 @@ class PeersManager {
         Events.on('files-selected', e => this._onFilesSelected(e.detail));
         Events.on('send-text', e => this._onSendText(e.detail));
         Events.on('peer-left', e => this._onPeerLeft(e.detail));
+        // The same device ID can return with a new page and fresh ICE state.
+        Events.on('peer-joined', e => this._onPeerLeft(e.detail.id));
+        Events.on('pagehide', () => this._clearPeers());
         Events.on('retry-failed-connections', () => {
             Object.values(this.peers).forEach(peer => {
                 if (peer instanceof RTCPeer) peer.retryConnection();
@@ -585,11 +597,9 @@ class PeersManager {
     }
 
     _onPeers(peers) {
+        // A fresh signaling session needs fresh connections, including retry roles.
+        this._clearPeers();
         peers.forEach(peer => {
-            if (this.peers[peer.id]) {
-                this.peers[peer.id].refresh();
-                return;
-            }
             if (window.isRtcSupported && peer.rtcSupported) {
                 this.peers[peer.id] = new RTCPeer(this._server, peer.id);
             } else {
@@ -608,6 +618,10 @@ class PeersManager {
 
     _onSendText(message) {
         this.peers[message.to].sendText(message.text);
+    }
+
+    _clearPeers() {
+        Object.keys(this.peers).forEach(peerId => this._onPeerLeft(peerId));
     }
 
     _onPeerLeft(peerId) {

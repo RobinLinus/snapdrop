@@ -31,6 +31,7 @@ class SnapdropServer {
         this._joinRoom(peer);
         peer.socket.on('message', message => this._onMessage(peer, message));
         peer.socket.on('error', console.error);
+        peer.socket.on('close', () => this._leaveRoom(peer));
         this._keepAlive(peer);
 
         // send displayName
@@ -87,6 +88,7 @@ class SnapdropServer {
         // Tabs with the same identity share a name; only distinct peers compete.
         const existingPeer = this._rooms[peer.ip][peer.id];
         if (existingPeer) {
+            this._cancelKeepAlive(existingPeer);
             peer.name.displayName = existingPeer.name.displayName;
         } else {
             const usedNames = new Set(Object.values(this._rooms[peer.ip])
@@ -96,6 +98,7 @@ class SnapdropServer {
 
         // notify all other peers
         for (const otherPeerId in this._rooms[peer.ip]) {
+            if (otherPeerId === peer.id) continue;
             const otherPeer = this._rooms[peer.ip][otherPeerId];
             this._send(otherPeer, {
                 type: 'peer-joined',
@@ -106,6 +109,7 @@ class SnapdropServer {
         // notify peer about the other peers
         const otherPeers = [];
         for (const otherPeerId in this._rooms[peer.ip]) {
+            if (otherPeerId === peer.id) continue;
             otherPeers.push(this._rooms[peer.ip][otherPeerId].getInfo());
         }
 
@@ -119,8 +123,9 @@ class SnapdropServer {
     }
 
     _leaveRoom(peer) {
-        if (!this._rooms[peer.ip] || !this._rooms[peer.ip][peer.id]) return;
-        this._cancelKeepAlive(this._rooms[peer.ip][peer.id]);
+        this._cancelKeepAlive(peer);
+        // A suspended page may close after its replacement has already joined.
+        if (!this._rooms[peer.ip] || this._rooms[peer.ip][peer.id] !== peer) return;
 
         // delete the peer
         delete this._rooms[peer.ip][peer.id];
@@ -147,6 +152,7 @@ class SnapdropServer {
 
     _keepAlive(peer) {
         this._cancelKeepAlive(peer);
+        if (!this._rooms[peer.ip] || this._rooms[peer.ip][peer.id] !== peer) return;
         var timeout = 30000;
         if (!peer.lastBeat) {
             peer.lastBeat = Date.now();

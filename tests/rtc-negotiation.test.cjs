@@ -6,6 +6,7 @@ const vm = require('node:vm');
 function setup() {
     const connections = [], errors = [], sent = [], events = [];
     const timers = new Map();
+    const listeners = new Map();
     let nextTimer = 0;
     const tick = () => new Promise(resolve => setImmediate(resolve));
     class Connection {
@@ -42,7 +43,9 @@ function setup() {
         close() { this.signalingState = 'closed'; }
     }
     const context = vm.createContext({
-        window: { URL: {}, addEventListener() {}, dispatchEvent(event) { events.push(event); } },
+        window: { URL: {}, RTCPeerConnection: Connection,
+            addEventListener(type, callback) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(callback); },
+            dispatchEvent(event) { events.push(event); for (const callback of listeners.get(event.type) || []) callback(event); } },
         CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
         console: { log() {}, error(error) { errors.push(error); } },
         setTimeout(callback, delay) { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
@@ -365,4 +368,41 @@ test('older clients remain usable without supporting the connection probe', asyn
     assert.equal(peer._connectionCheck, 'unsupported');
     assert.equal(peer._channel.sent.length, 0);
     assert.equal(t.timers.size, 0);
+});
+
+
+test('a rejoining device clears old reversed state before accepting its fresh offer', async () => {
+    const t = setup();
+    const manager = new t.PeersManager(t.server);
+    const old = new t.RTCPeer(t.server, 'phone');
+    manager.peers.phone = old;
+    old._reversed = true;
+    t.window.dispatchEvent({ type: 'peer-joined', detail: { id: 'phone' } });
+    assert.equal(old._closed, true);
+    manager._onMessage({ sender: 'phone', reversed: false, connectionCheck: true,
+        sdp: { type: 'offer', sdp: 'new-page' } });
+    const fresh = manager.peers.phone;
+    await fresh._operations;
+    assert.notEqual(fresh, old);
+    assert.equal(fresh._conn.localDescription.type, 'answer');
+    assert.equal(fresh._isCaller, false);
+    assert.equal(t.errors.length, 0);
+});
+
+test('pagehide clears peers and reconnect snapshots rebuild them without stale devices', async () => {
+    const t = setup();
+    const manager = new t.PeersManager(t.server);
+    manager._onPeers([{ id: 'phone', rtcSupported: true }, { id: 'gone', rtcSupported: true }]);
+    const old = manager.peers.phone;
+    old._reversed = true;
+    manager._onPeers([{ id: 'phone', rtcSupported: true }]);
+    assert.equal(old._closed, true);
+    assert.equal(manager.peers.gone, undefined);
+    assert.notEqual(manager.peers.phone, old);
+    assert.equal(manager.peers.phone._reversed, undefined);
+    t.window.dispatchEvent({ type: 'pagehide' });
+    assert.equal(Object.keys(manager.peers).length, 0);
+    assert.equal(t.timers.size, 0);
+    await old._operations;
+    assert.equal(t.errors.length, 0);
 });
