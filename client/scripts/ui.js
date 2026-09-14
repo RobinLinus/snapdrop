@@ -84,7 +84,6 @@ class PeerUI {
                   <div class="circle right"></div>
                 </div>
                 <div class="name font-subheading"></div>
-                <div class="device-name font-body2"></div>
                 <div class="status font-body2"></div>
             </label>`
     }
@@ -102,7 +101,6 @@ class PeerUI {
         el.ui = this;
         el.querySelector('svg use').setAttribute('xlink:href', this._icon());
         el.querySelector('.name').textContent = this._displayName();
-        el.querySelector('.device-name').textContent = this._deviceName();
         this.$el = el;
         this.$progress = el.querySelector('.progress');
     }
@@ -123,10 +121,6 @@ class PeerUI {
 
     _displayName() {
         return this._peer.name.displayName;
-    }
-
-    _deviceName() {
-        return this._peer.name.deviceName;
     }
 
     _icon() {
