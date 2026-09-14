@@ -11,7 +11,7 @@
 * [Producthunt](https://www.producthunt.com/posts/snapdrop)
 
 ### Help! I can't install the PWA!
-if you are using a Chromium-based browser (Chrome, Edge, Brave, etc.), you can easily install Snapdrop PWA on your desktop by clicking the install button in the top-right corner while on [snapdrop.net](https://snapdrop.net) (see below).
+if you are using a Chromium-based browser (Chrome, Edge, Brave, etc.), you can easily install Snapdrop PWA on your desktop by clicking the install button in the top-right corner while on [snapdrop.me](https://snapdrop.me) (see below).
 <img src="pwa-install.png">
 
 ### What about the connection? Is it a P2P-connection directly from device to device or is there any third-party-server?
