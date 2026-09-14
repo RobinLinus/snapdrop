@@ -1,6 +1,7 @@
 // Run with Playwright available (NODE_PATH may point to a shared installation).
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
+const { expect } = require('playwright/test');
 const { serve } = require('../scripts/serve-tests.cjs');
 
 async function checkNotifications(browser, url, errors) {
@@ -19,16 +20,16 @@ async function checkNotifications(browser, url, errors) {
         await page.goto(url);
         await page.evaluate(async () => { await window.serviceWorkerReady; });
         await page.evaluate(() => Events.fire('text-received', { text: 'Notification test' }));
-        await page.waitForFunction(async () => (await (await window.serviceWorkerReady).getNotifications()).length === 1);
-        assert.deepEqual(await page.evaluate(async () => {
+        // Poll an asynchronous browser API, awaiting each read before checking it.
+        await expect.poll(() => page.evaluate(async () => {
             const [notification] = await (await window.serviceWorkerReady).getNotifications();
-            return { title: notification.title, body: notification.body, url: notification.data.url };
-        }), { title: 'Notification test', body: 'Click to return to Snapdrop', url: url + '/' });
+            return notification && { title: notification.title, body: notification.body, url: notification.data.url };
+        })).toEqual({ title: 'Notification test', body: 'Click to return to Snapdrop', url: url + '/' });
         await page.evaluate(() => {
             document.hasFocus = () => true;
             window.dispatchEvent(new Event('focus'));
         });
-        await page.waitForFunction(async () => (await (await window.serviceWorkerReady).getNotifications()).length === 0);
+        await expect.poll(() => page.evaluate(async () => (await (await window.serviceWorkerReady).getNotifications()).length)).toBe(0);
         console.log('PASS: actual service worker notification creation and cleanup on focus.');
     } finally {
         await context.close();
