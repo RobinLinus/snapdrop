@@ -1,4 +1,4 @@
-var CACHE_NAME = 'snapdrop-cache-v22';
+var CACHE_NAME = 'snapdrop-cache-v23';
 var urlsToCache = [
   'index.html',
   './',
@@ -60,7 +60,15 @@ self.addEventListener('activate', function(event) {
 self.addEventListener('notificationclick', function(event) {
   event.notification.close();
   event.waitUntil((async () => {
-    const url = new URL(event.notification.data && event.notification.data.url || './', self.registration.scope);
+    const data = event.notification.data || {};
+    if (event.action && event.action !== 'open') return;
+    if (data.link) {
+      let link;
+      try { link = new URL(data.link); } catch (_) { return; }
+      if (link.protocol !== 'https:' && link.protocol !== 'http:') return;
+      return self.clients.openWindow(link.href);
+    }
+    const url = new URL(data.url || './', self.registration.scope);
     if (url.origin !== self.location.origin || !url.href.startsWith(self.registration.scope)) return;
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const client = windows.find(client => client.url === url.href);

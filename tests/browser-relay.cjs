@@ -30,7 +30,44 @@ async function checkNotifications(browser, url, errors) {
             window.dispatchEvent(new Event('focus'));
         });
         await expect.poll(() => page.evaluate(async () => (await (await window.serviceWorkerReady).getNotifications()).length)).toBe(0);
-        console.log('PASS: actual service worker notification creation and cleanup on focus.');
+        await page.evaluate(() => {
+            document.hasFocus = () => false;
+            Events.fire('text-received', { text: 'https://example.com/path?q=1' });
+        });
+        await expect.poll(() => page.evaluate(async () => {
+            const [notification] = await (await window.serviceWorkerReady).getNotifications();
+            return notification && { link: notification.data.link, actions: notification.actions.map(({ action, title }) => ({ action, title })) };
+        })).toEqual({ link: 'https://example.com/path?q=1', actions: [{ action: 'open', title: 'Open' }] });
+        await page.evaluate(async () => {
+            for (const notification of await (await window.serviceWorkerReady).getNotifications()) notification.close();
+        });
+        console.log('PASS: actual service worker notification creation, cleanup on focus, and Open action for links.');
+    } finally {
+        await context.close();
+    }
+}
+
+async function checkClipboard(browser, url, errors) {
+    const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'], serviceWorkers: 'block' });
+    try {
+        const page = await context.newPage();
+        page.on('pageerror', error => errors.push(error.message));
+        await page.goto(url);
+        const message = 'Copy exactly: hello 🌍\n  second line';
+        await page.evaluate(text => Events.fire('text-received', { text }), message);
+        await page.locator('#copy').click();
+        await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(message);
+        await expect(page.locator('#receiveTextDialog')).not.toHaveAttribute('show', '1');
+        // A failed copy must preserve the message and offer a manual fallback.
+        await page.evaluate(() => {
+            navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
+            Events.fire('text-received', { text: 'Keep this message' });
+        });
+        await page.locator('#copy').click();
+        await expect(page.locator('#receiveTextDialog')).toHaveAttribute('show', '1');
+        await expect(page.locator('#text')).toHaveText('Keep this message');
+        await expect(page.locator('#toast')).toContainText('copy it manually');
+        console.log('PASS: exact clipboard contents after Copy, and preserved dialog after a denied write.');
     } finally {
         await context.close();
     }
@@ -43,6 +80,7 @@ async function checkNotifications(browser, url, errors) {
     try {
         browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
         await checkNotifications(browser, app.url, errors);
+        await checkClipboard(browser, app.url, errors);
         const contextA = await browser.newContext({ serviceWorkers: 'block' });
         const contextB = await browser.newContext({ serviceWorkers: 'block' });
         const a = await contextA.newPage();

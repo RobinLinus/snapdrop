@@ -20,7 +20,7 @@ function eventTarget() {
 }
 
 function setup({ permission = 'granted', mobile = false, supported = true, secure = true, registration } = {}) {
-    const shown = [], notices = [], actions = [];
+    const shown = [], notices = [], actions = [], timers = new Map();
     const button = { ...eventTarget(), hidden: true };
     const document = { ...eventTarget(), visibilityState: 'hidden', focused: false,
         hasFocus() { return this.focused; },
@@ -44,8 +44,10 @@ function setup({ permission = 'granted', mobile = false, supported = true, secur
     };
     if (supported) window.Notification = Notification;
     const navigator = { clipboard: { async writeText(text) { actions.push(text); } } };
-    const context = vm.createContext({ window, document, navigator, Notification, crypto,
-        $: () => button, isURL: text => /^https?:\/\//.test(text),
+    const context = vm.createContext({ window, document, navigator, Notification, crypto, URL,
+        setTimeout(fn) { timers.set(fn, fn); return fn; },
+        clearTimeout(id) { timers.delete(id); },
+        $: () => button,
         Events: {
             on: (type, handler) => window.addEventListener(type, handler),
             off: (type, handler) => window.removeEventListener(type, handler),
@@ -53,9 +55,10 @@ function setup({ permission = 'granted', mobile = false, supported = true, secur
         }
     });
     const source = fs.readFileSync('client/scripts/ui.js', 'utf8');
+    vm.runInContext(source.slice(source.indexOf('const getURL'), source.indexOf('const playNotificationSound')), context);
     vm.runInContext(source.slice(source.indexOf('class Notifications'), source.indexOf('class NetworkStatusUI'))
         + '\nNotifications.PERMISSION_ERROR = "Notifications are blocked."; this.notifications = new Notifications();', context);
-    return { ...context, button, shown, notices, actions };
+    return { ...context, button, shown, notices, actions, timers };
 }
 
 test('unsupported and insecure contexts keep the permission button hidden', () => {
@@ -157,6 +160,55 @@ test('desktop clicks focus Snapdrop before copying, opening links, or downloadin
     assert.match(t.notices.at(-1).detail, /Could not copy/);
 });
 
+test('notification copy waits for actual document focus and keeps the clicked message', async () => {
+    const t = setup();
+    t.window.focus = () => t.actions.push('focus-request');
+    t.navigator.clipboard.writeText = async text => {
+        if (!t.document.hasFocus()) throw new Error('Document is not focused');
+        t.actions.push(text);
+    };
+    await t.notifications._messageNotification('Message from the clicked notification');
+    t.shown[0].onclick();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(t.notices, []);
+    assert.deepEqual(t.actions, ['focus-request']);
+    await t.window.emit('focus'); // Browser window can activate before its document.
+    assert.deepEqual(t.actions, ['focus-request']);
+    t.document.visibilityState = 'visible';
+    t.document.focused = true;
+    await t.window.emit('focus');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(t.actions, ['focus-request', 'Message from the clicked notification']);
+    assert.equal(t.notices.at(-1).detail, 'Copied to clipboard');
+    assert.equal(t.window.handlers.get('focus').size, 1);
+    assert.equal(t.document.handlers.get('visibilitychange').size, 0);
+});
+
+test('copy abandons a failed focus request instead of copying on an unrelated later visit', async () => {
+    const t = setup();
+    const pending = t.notifications._copyText('Old message');
+    assert.equal(t.actions.length, 0);
+    assert.equal(t.timers.size, 1);
+    t.timers.values().next().value();
+    await pending;
+    assert.match(t.notices.at(-1).detail, /Could not copy/);
+    t.document.focused = true;
+    await t.window.emit('focus');
+    assert.equal(t.actions.length, 0);
+    assert.equal(t.timers.size, 0);
+    assert.equal(t.window.handlers.get('focus').size, 1);
+    assert.equal(t.document.handlers.get('visibilitychange').size, 0);
+});
+
+test('copy in an already focused document writes in the click task', async () => {
+    const t = setup();
+    t.document.focused = true;
+    const pending = t.notifications._copyText('Immediate copy');
+    assert.deepEqual(t.actions, ['Immediate copy']);
+    assert.equal(t.timers.size, 0);
+    await pending;
+});
+
 test('mobile notifications wait for registration and close only their own notification', async () => {
     let ready, options;
     const closed = [];
@@ -190,6 +242,36 @@ test('notification failures are contained when the worker is missing or rejects'
         await t.notifications._downloadNotification('photo.png');
         assert.equal(t.notices.length, 2);
         assert.match(t.notices[0].detail, /Could not show/);
+    }
+});
+
+test('links request a persistent Open action and normalize www addresses', async () => {
+    const shown = [];
+    const t = setup({ registration: Promise.resolve({
+        async showNotification(title, options) { shown.push({ title, options }); }
+    }) });
+    await t.notifications._messageNotification('www.example.com/path?q=1');
+    assert.equal(t.shown.length, 0); // The desktop constructor cannot display action buttons.
+    assert.equal(shown[0].options.data.link, 'https://www.example.com/path?q=1');
+    assert.equal(shown[0].options.body, 'Click to open link');
+    assert.equal(shown[0].options.actions.length, 1);
+    assert.equal(shown[0].options.actions[0].action, 'open');
+    assert.equal(shown[0].options.actions[0].title, 'Open');
+});
+
+test('unavailable persistent notifications keep links clickable on desktop', async () => {
+    const t = setup({ registration: Promise.resolve(null) });
+    await t.notifications._messageNotification('www.example.com');
+    t.shown[0].onclick();
+    assert.deepEqual(t.actions, ['focus', 'https://www.example.com/']);
+    assert.equal(t.notices.length, 0);
+});
+
+test('non-web URLs and text containing links remain copyable messages', async () => {
+    const t = setup();
+    for (const message of ['javascript:alert(1)', 'data:text/html,test', 'file:///etc/passwd', 'https://example.com/ with a comment']) {
+        await t.notifications._messageNotification(message);
+        assert.equal(t.shown.at(-1).options.body, 'Click to copy text');
     }
 });
 
@@ -231,5 +313,29 @@ test('persistent notification clicks focus Snapdrop or reopen it within the work
             waitUntil(promise) { pending = promise; } });
         await pending;
         assert.deepEqual(actions, expected ? ['close', expected] : ['close']);
+    }
+});
+
+test('Open and body clicks open the exact web link; unsafe URLs and unknown actions do nothing', async () => {
+    for (const [link, action, expected] of [
+        ['https://example.com/path?q=1#part', 'open', true],
+        ['http://example.com/', '', true],
+        ['javascript:alert(1)', 'open', false],
+        ['data:text/html,test', '', false],
+        ['/relative', 'open', false],
+        ['https://example.com/', 'unknown', false]
+    ]) {
+        const handlers = {}, opened = [];
+        const self = {
+            addEventListener(type, handler) { handlers[type] = handler; },
+            clients: { async openWindow(url) { opened.push(url); } }
+        };
+        vm.runInNewContext(fs.readFileSync('client/service-worker.js', 'utf8'), { self, URL });
+        let pending, closed = false;
+        handlers.notificationclick({ action, notification: { data: { link }, close() { closed = true; } },
+            waitUntil(promise) { pending = promise; } });
+        await pending;
+        assert.equal(closed, true);
+        assert.deepEqual(opened, expected ? [link] : []);
     }
 });

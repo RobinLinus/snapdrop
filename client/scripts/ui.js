@@ -1,6 +1,16 @@
 const $ = query => document.getElementById(query);
 const $$ = query => document.body.querySelector(query);
-const isURL = text => /^((https?:\/\/|www)[^\s]+)/g.test(text.toLowerCase());
+const getURL = text => {
+    const value = text.trim();
+    if (/\s/.test(value)) return null;
+    try {
+        const url = new URL(/^www\./i.test(value) ? 'https://' + value : value);
+        return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+    } catch (_) {
+        return null;
+    }
+};
+const isURL = text => getURL(text) !== null;
 const playNotificationSound = () => { window.blop.play().catch(() => {}); };
 window.isDownloadSupported = (typeof document.createElement('a').download !== 'undefined');
 window.isProductionEnvironment = !window.location.host.startsWith('localhost');
@@ -412,7 +422,7 @@ class ReceiveTextDialog extends Dialog {
         Events.on('text-received', e => this._onText(e.detail))
         this.$text = this.$el.querySelector('#text');
         const $copy = this.$el.querySelector('#copy');
-        copy.addEventListener('click', _ => this._onCopy());
+        $copy.addEventListener('click', _ => this._onCopy());
     }
 
     _onText(e) {
@@ -420,7 +430,7 @@ class ReceiveTextDialog extends Dialog {
         const text = e.text;
         if (isURL(text)) {
             const $a = document.createElement('a');
-            $a.href = text;
+            $a.href = getURL(text);
             $a.target = '_blank';
             $a.textContent = text;
             this.$text.appendChild($a);
@@ -432,8 +442,13 @@ class ReceiveTextDialog extends Dialog {
     }
 
     async _onCopy() {
-        await navigator.clipboard.writeText(this.$text.textContent);
-        Events.fire('notify-user', 'Copied to clipboard');
+        try {
+            await navigator.clipboard.writeText(this.$text.textContent);
+            this.hide();
+            Events.fire('notify-user', 'Copied to clipboard');
+        } catch (error) {
+            Events.fire('notify-user', 'Could not copy text. Select the message and copy it manually.');
+        }
     }
 }
 
@@ -494,7 +509,7 @@ class Notifications {
         return document.visibilityState === 'visible' && document.hasFocus();
     }
 
-    async _notify(message, body) {
+    async _notify(message, body, link) {
         if (Notification.permission !== 'granted') return;
         const config = {
             body,
@@ -502,29 +517,20 @@ class Notifications {
         };
         let notification;
         try {
-            notification = new Notification(message, config);
-            notification.onerror = () => Events.fire('notify-user', 'Could not show notification. Check your browser and system notification settings.');
-        } catch (error) {
-            // Mobile browsers require an active service worker for notifications.
-            try {
-                const registration = await window.serviceWorkerReady;
-                if (!registration || !registration.showNotification) throw error;
-                config.tag = 'snapdrop-' + crypto.randomUUID();
-                config.data = { url: window.location.href };
-                config.body = 'Click to return to Snapdrop';
-                await registration.showNotification(message, config);
-                // showNotification resolves without a Notification object.
-                notification = {
-                    persistent: true,
-                    close: async () => {
-                        const notifications = await registration.getNotifications({ tag: config.tag });
-                        notifications.forEach(item => item.close());
-                    }
-                };
-            } catch (error) {
-                Events.fire('notify-user', 'Could not show notification. Check your browser and system notification settings.');
-                return;
+            if (link) {
+                // Action buttons require a persistent notification, including on desktop.
+                try { notification = await this._persistentNotification(message, config, link); }
+                catch (_) { notification = new Notification(message, config); }
+            } else {
+                try { notification = new Notification(message, config); }
+                catch (_) { notification = await this._persistentNotification(message, config); }
             }
+            if (!notification.persistent) {
+                notification.onerror = () => Events.fire('notify-user', 'Could not show notification. Check your browser and system notification settings.');
+            }
+        } catch (error) {
+            Events.fire('notify-user', 'Could not show notification. Check your browser and system notification settings.');
+            return;
         }
 
         const cleanup = () => {
@@ -544,11 +550,33 @@ class Notifications {
         return notification;
     }
 
+    async _persistentNotification(message, config, link) {
+        const registration = await window.serviceWorkerReady;
+        if (!registration || !registration.showNotification) throw new Error('Notifications require an active service worker');
+        const tag = 'snapdrop-' + crypto.randomUUID();
+        await registration.showNotification(message, {
+            ...config,
+            tag,
+            body: link ? config.body : 'Click to return to Snapdrop',
+            data: { url: window.location.href, link },
+            actions: link ? [{ action: 'open', title: 'Open' }] : []
+        });
+        // showNotification resolves without a Notification object.
+        return {
+            persistent: true,
+            close: async () => {
+                const notifications = await registration.getNotifications({ tag });
+                notifications.forEach(item => item.close());
+            }
+        };
+    }
+
     async _messageNotification(message) {
         if (!this._isActive()) {
-            if (isURL(message)) {
-                const notification = await this._notify(message, 'Click to open link');
-                this._bind(notification, () => window.open(message, '_blank', 'noopener,noreferrer'));
+            const link = getURL(message);
+            if (link) {
+                const notification = await this._notify(message, 'Click to open link', link);
+                this._bind(notification, () => window.open(link, '_blank', 'noopener,noreferrer'));
             } else {
                 const notification = await this._notify(message, 'Click to copy text');
                 this._bind(notification, () => this._copyText(message));
@@ -566,11 +594,35 @@ class Notifications {
 
     async _copyText(message) {
         try {
+            // window.focus() requests activation; clipboard access must wait until it completes.
+            // Keep the already-focused path synchronous to preserve the click's user activation.
+            if (!document.hasFocus() && !await this._waitForFocus()) {
+                throw new Error('The page did not receive focus');
+            }
             await navigator.clipboard.writeText(message);
             Events.fire('notify-user', 'Copied to clipboard');
         } catch (error) {
             Events.fire('notify-user', 'Could not copy text. Use the Copy button in Snapdrop.');
         }
+    }
+
+    _waitForFocus() {
+        return new Promise(resolve => {
+            const finish = focused => {
+                clearTimeout(timer);
+                Events.off('focus', onFocus);
+                document.removeEventListener('visibilitychange', onFocus);
+                resolve(focused);
+            };
+            const onFocus = () => {
+                if (document.hasFocus()) finish(true);
+            };
+            // Never leave a pending copy that overwrites the clipboard on a much later visit.
+            const timer = setTimeout(() => finish(false), 2000);
+            Events.on('focus', onFocus);
+            document.addEventListener('visibilitychange', onFocus);
+            onFocus();
+        });
     }
 
     _bind(notification, handler) {
