@@ -29,7 +29,7 @@ class ConnectionLog {
     }
 }
 // Bump with the service-worker cache version for each client release.
-ConnectionLog.clientVersion = 'v21';
+ConnectionLog.clientVersion = 'v22';
 ConnectionLog.page = Math.random().toString(36).slice(2, 10);
 ConnectionLog.write('client-start', { userAgent: typeof navigator === 'undefined' ? undefined : navigator.userAgent });
 

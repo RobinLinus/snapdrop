@@ -455,94 +455,132 @@ class Notifications {
 
     constructor() {
         // Check if the browser supports notifications
-        if (!('Notification' in window)) return;
+        if (!('Notification' in window) || !window.isSecureContext) return;
 
-        // Check whether notification permissions have already been granted
-        if (Notification.permission !== 'granted') {
-            this.$button = $('notification');
-            this.$button.removeAttribute('hidden');
-            this.$button.addEventListener('click', e => this._requestPermission());
-        }
+        this.$button = $('notification');
+        this._updatePermission();
+        this.$button.addEventListener('click', e => {
+            e.preventDefault();
+            this._requestPermission();
+        });
+        Events.on('focus', () => this._updatePermission());
         Events.on('text-received', e => this._messageNotification(e.detail.text));
         Events.on('file-received', e => this._downloadNotification(e.detail.name));
     }
 
-    _requestPermission() {
-        Notification.requestPermission(permission => {
-            if (permission !== 'granted') {
-                Events.fire('notify-user', Notifications.PERMISSION_ERROR || 'Error');
-                return;
-            }
-            this._notify('Even more snappy sharing!');
-            this.$button.setAttribute('hidden', 1);
-        });
+    _updatePermission() {
+        this.$button.hidden = Notification.permission === 'granted';
     }
 
-    _notify(message, body) {
-        const config = {
-            body: body,
-            icon: '/images/logo_transparent_128x128.png',
+    async _requestPermission() {
+        if (this._requesting) return;
+        this._requesting = true;
+        try {
+            const permission = await Notification.requestPermission();
+            this._updatePermission();
+            if (permission === 'denied') {
+                Events.fire('notify-user', Notifications.PERMISSION_ERROR);
+            } else if (permission === 'granted') {
+                await this._notify('Even more snappy sharing!');
+            }
+        } catch (error) {
+            Events.fire('notify-user', 'Could not enable notifications. Check your browser’s site settings.');
+        } finally {
+            this._requesting = false;
         }
+    }
+
+    _isActive() {
+        return document.visibilityState === 'visible' && document.hasFocus();
+    }
+
+    async _notify(message, body) {
+        if (Notification.permission !== 'granted') return;
+        const config = {
+            body,
+            icon: '/images/logo_transparent_128x128.png',
+        };
         let notification;
         try {
             notification = new Notification(message, config);
-        } catch (e) {
-            // Android doesn't support "new Notification" if service worker is installed
-            if (!serviceWorker || !serviceWorker.showNotification) return;
-            notification = serviceWorker.showNotification(message, config);
+            notification.onerror = () => Events.fire('notify-user', 'Could not show notification. Check your browser and system notification settings.');
+        } catch (error) {
+            // Mobile browsers require an active service worker for notifications.
+            try {
+                const registration = await window.serviceWorkerReady;
+                if (!registration || !registration.showNotification) throw error;
+                config.tag = 'snapdrop-' + crypto.randomUUID();
+                config.data = { url: window.location.href };
+                config.body = 'Click to return to Snapdrop';
+                await registration.showNotification(message, config);
+                // showNotification resolves without a Notification object.
+                notification = {
+                    persistent: true,
+                    close: async () => {
+                        const notifications = await registration.getNotifications({ tag: config.tag });
+                        notifications.forEach(item => item.close());
+                    }
+                };
+            } catch (error) {
+                Events.fire('notify-user', 'Could not show notification. Check your browser and system notification settings.');
+                return;
+            }
         }
 
-        // Notification is persistent on Android. We have to close it manually
-        const visibilitychangeHandler = () => {                             
-            if (document.visibilityState === 'visible') {    
-                notification.close();
-                Events.off('visibilitychange', visibilitychangeHandler);
-            }                                                       
-        };                                                                                
-        Events.on('visibilitychange', visibilitychangeHandler);
-
+        const cleanup = () => {
+            document.removeEventListener('visibilitychange', closeWhenActive);
+            Events.off('focus', closeWhenActive);
+        };
+        const closeWhenActive = () => {
+            if (!this._isActive()) return;
+            cleanup();
+            Promise.resolve(notification.close()).catch(() => {});
+        };
+        document.addEventListener('visibilitychange', closeWhenActive);
+        Events.on('focus', closeWhenActive);
+        if (!notification.persistent) notification.onclose = cleanup;
+        // A background notification may finish showing after the user returns.
+        if (body) closeWhenActive();
         return notification;
     }
 
-    _messageNotification(message) {
-        if (document.visibilityState !== 'visible') {
+    async _messageNotification(message) {
+        if (!this._isActive()) {
             if (isURL(message)) {
-                const notification = this._notify(message, 'Click to open link');
-                this._bind(notification, e => window.open(message, '_blank', null, true));
+                const notification = await this._notify(message, 'Click to open link');
+                this._bind(notification, () => window.open(message, '_blank', 'noopener,noreferrer'));
             } else {
-                const notification = this._notify(message, 'Click to copy text');
-                this._bind(notification, e => this._copyText(message, notification));
+                const notification = await this._notify(message, 'Click to copy text');
+                this._bind(notification, () => this._copyText(message));
             }
         }
     }
 
-    _downloadNotification(message) {
-        if (document.visibilityState !== 'visible') {
-            const notification = this._notify(message, 'Click to download');
+    async _downloadNotification(message) {
+        if (!this._isActive()) {
+            const notification = await this._notify(message, 'Click to download');
             if (!window.isDownloadSupported) return;
-            this._bind(notification, e => this._download(notification));
+            this._bind(notification, () => document.querySelector('x-dialog [download]').click());
         }
     }
 
-    _download(notification) {
-        document.querySelector('x-dialog [download]').click();
-        notification.close();
-    }
-
-    _copyText(message, notification) {
-        notification.close();
-        if (!navigator.clipboard.writeText(message)) return;
-        this._notify('Copied text to clipboard');
+    async _copyText(message) {
+        try {
+            await navigator.clipboard.writeText(message);
+            Events.fire('notify-user', 'Copied to clipboard');
+        } catch (error) {
+            Events.fire('notify-user', 'Could not copy text. Use the Copy button in Snapdrop.');
+        }
     }
 
     _bind(notification, handler) {
-        if (notification.then) {
-            notification.then(e => serviceWorker.getNotifications().then(notifications => {
-                serviceWorker.addEventListener('notificationclick', handler);
-            }));
-        } else {
-            notification.onclick = handler;
-        }
+        // Persistent notification clicks are handled in service-worker.js.
+        if (!notification || notification.persistent) return;
+        notification.onclick = () => {
+            notification.close();
+            window.focus();
+            handler();
+        };
     }
 }
 
@@ -607,10 +645,14 @@ const snapdrop = new Snapdrop();
 
 
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('service-worker.js')
-        .then(serviceWorker => {
+    window.serviceWorkerReady = navigator.serviceWorker.register('service-worker.js')
+        .then(() => navigator.serviceWorker.ready)
+        .then(registration => {
             console.log('Service Worker registered');
-            window.serviceWorker = serviceWorker
+            return registration;
+        }).catch(error => {
+            console.warn('Service Worker registration failed:', error);
+            return null;
         });
 }
 
@@ -690,11 +732,7 @@ Events.on('load', () => {
     animate();
 });
 
-Notifications.PERMISSION_ERROR = `
-Notifications permission has been blocked
-as the user has dismissed the permission prompt several times.
-This can be reset in Page Info
-which can be accessed by clicking the lock icon next to the URL.`;
+Notifications.PERMISSION_ERROR = 'Notifications are blocked. Allow notifications for Snapdrop in your browser’s site settings.';
 
 document.body.onclick = e => { // safari hack to fix audio
     document.body.onclick = null;

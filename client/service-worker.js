@@ -1,4 +1,4 @@
-var CACHE_NAME = 'snapdrop-cache-v21';
+var CACHE_NAME = 'snapdrop-cache-v22';
 var urlsToCache = [
   'index.html',
   './',
@@ -55,4 +55,16 @@ self.addEventListener('activate', function(event) {
       );
     }).then(() => self.clients.claim())
   );
+});
+
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const url = new URL(event.notification.data && event.notification.data.url || './', self.registration.scope);
+    if (url.origin !== self.location.origin || !url.href.startsWith(self.registration.scope)) return;
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const client = windows.find(client => client.url === url.href);
+    if (client) return client.focus();
+    return self.clients.openWindow(url.href);
+  })());
 });

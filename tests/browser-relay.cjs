@@ -3,12 +3,45 @@ const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const { serve } = require('../scripts/serve-tests.cjs');
 
+async function checkNotifications(browser, url, errors) {
+    const context = await browser.newContext({ permissions: ['notifications'] });
+    try {
+        const page = await context.newPage();
+        page.on('pageerror', error => errors.push(error.message));
+        await page.addInitScript(() => {
+            // Exercise the mobile path with Chrome's real service worker/notification APIs.
+            window.Notification = new Proxy(window.Notification, {
+                construct() { throw new TypeError('Use service worker notifications'); }
+            });
+            document.hasFocus = () => false;
+            HTMLMediaElement.prototype.play = () => Promise.resolve();
+        });
+        await page.goto(url);
+        await page.evaluate(async () => { await window.serviceWorkerReady; });
+        await page.evaluate(() => Events.fire('text-received', { text: 'Notification test' }));
+        await page.waitForFunction(async () => (await (await window.serviceWorkerReady).getNotifications()).length === 1);
+        assert.deepEqual(await page.evaluate(async () => {
+            const [notification] = await (await window.serviceWorkerReady).getNotifications();
+            return { title: notification.title, body: notification.body, url: notification.data.url };
+        }), { title: 'Notification test', body: 'Click to return to Snapdrop', url: url + '/' });
+        await page.evaluate(() => {
+            document.hasFocus = () => true;
+            window.dispatchEvent(new Event('focus'));
+        });
+        await page.waitForFunction(async () => (await (await window.serviceWorkerReady).getNotifications()).length === 0);
+        console.log('PASS: actual service worker notification creation and cleanup on focus.');
+    } finally {
+        await context.close();
+    }
+}
+
 (async () => {
     const app = await serve();
     let browser;
     const errors = [];
     try {
         browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
+        await checkNotifications(browser, app.url, errors);
         const contextA = await browser.newContext({ serviceWorkers: 'block' });
         const contextB = await browser.newContext({ serviceWorkers: 'block' });
         const a = await contextA.newPage();
