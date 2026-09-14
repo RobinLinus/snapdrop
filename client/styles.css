@@ -22,6 +22,7 @@ body {
     flex-direction: column;
     width: 100%;
     overflow-x: hidden;
+    user-select: none;
 }
 
 body {
@@ -101,6 +102,7 @@ h2 {
     font-weight: 400;
     letter-spacing: -.012em;
     line-height: 32px;
+    user-select: none;
 }
 
 h3 {
@@ -212,7 +214,6 @@ x-peers:not(:empty)+x-no-peers {
 
 x-peer {
     -webkit-user-select: none;
-    user-select: none;
 }
 
 x-peer label {
