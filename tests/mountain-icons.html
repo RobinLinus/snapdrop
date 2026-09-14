@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mountain icons · Snapdrop experiment</title>
+<style>
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        min-height: 100vh;
+        color: #29313e;
+        background: radial-gradient(ellipse at 50% 0, #fff 0, #f6f7f9 60%, #eff1f5 100%);
+        font: 15px/1.5 system-ui, sans-serif;
+    }
+    main { max-width: 960px; margin: auto; padding: 64px 28px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+    h1 { margin: 0 0 6px; font-size: 28px; font-weight: 600; letter-spacing: -.8px; }
+    p { margin: 0; color: #747d89; }
+    .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    label { color: #747d89; font-size: 13px; }
+    select, .regenerate {
+        border: 1px solid #dce0e6;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font: inherit;
+        background: white;
+        color: inherit;
+        cursor: pointer;
+    }
+    .regenerate { background: #29313e; border-color: #29313e; color: white; }
+    #gallery { display: grid; grid-template-columns: repeat(4, 1fr); gap: 40px 28px; margin: 48px 0 36px; }
+    .icon {
+        display: block;
+        width: 100%;
+        max-width: 190px;
+        aspect-ratio: 1;
+        margin: auto;
+        padding: 7px;
+        border: 1px solid #e6e8ed;
+        border-radius: 50%;
+        background: linear-gradient(145deg, #fff, #f4f5f7);
+        box-shadow: 0 3px 5px #26334b09, 0 14px 26px #26334b12, inset 0 1px 2px white;
+        cursor: pointer;
+        transition: transform .18s, box-shadow .18s;
+    }
+    .icon:hover { transform: translateY(-4px); box-shadow: 0 18px 30px #26334b20; }
+    button:focus-visible, select:focus-visible { outline: 3px solid #8878dd; outline-offset: 5px; }
+    .icon svg { display: block; width: 100%; height: 100%; border-radius: 50%; }
+    footer { font-size: 13px; text-align: center; color: #747d89; }
+    @media (max-width: 650px) {
+        main { padding: 36px 22px; }
+        #gallery { grid-template-columns: repeat(3, 1fr); gap: 26px 18px; }
+    }
+    @media (max-width: 420px) { #gallery { grid-template-columns: repeat(2, 1fr); } }
+    @media (prefers-reduced-motion: reduce) { .icon { transition: none; } }
+</style>
+<main>
+    <header>
+        <div>
+            <h1>Little landscapes</h1>
+            <p>Random mountains. A different view every time.</p>
+        </div>
+        <div class="controls">
+            <label for="palette">Palette</label>
+            <select id="palette"><option value="">Surprise me</option></select>
+            <button class="regenerate" id="regenerate">Regenerate all</button>
+        </div>
+    </header>
+    <div id="gallery" aria-label="Generated mountain icons"></div>
+    <footer>Click any landscape to generate another.</footer>
+</main>
+<script>
+    // Each palette supplies sky, haze, distant rock, lit rock, shadow, foreground, and sunlight.
+    const palettes = {
+        'Rose': ['#ffcadc', '#ffb5d7', '#eb79ba', '#ed399b', '#ab239e', '#72148d', '#ff9651'],
+        'Violet': ['#8128f3', '#d568f4', '#a53fe6', '#6924be', '#411185', '#25084f', '#be63ff'],
+        'Lagoon': ['#80dedb', '#cbf5df', '#5abbb9', '#208c96', '#155c73', '#10384f', '#b9edbc'],
+        'Blue hour': ['#6292e0', '#c5c4f1', '#788fcb', '#4464ad', '#293d80', '#192348', '#e7bbd3'],
+        'Ember': ['#ffc992', '#ffe2b1', '#e39b9c', '#cc647f', '#833f71', '#47294e', '#ffb95e'],
+        'Moss': ['#c7d8b5', '#f0e6bb', '#9aad93', '#668879', '#365e5c', '#203c43', '#e4d79d']
+    };
+    const gallery = document.querySelector('#gallery');
+    const paletteSelect = document.querySelector('#palette');
+    const random = (min, max) => min + Math.random() * (max - min);
+    const pick = values => values[Math.floor(Math.random() * values.length)];
+    let serial = 0;
+
+    for (const name of Object.keys(palettes)) paletteSelect.add(new Option(name, name));
+
+    function mix(a, b, amount) {
+        const channels = [1, 3, 5].map(i => Math.round(
+            parseInt(a.slice(i, i + 2), 16) * (1 - amount) + parseInt(b.slice(i, i + 2), 16) * amount
+        ).toString(16).padStart(2, '0'));
+        return `#${channels.join('')}`;
+    }
+
+    // Slightly ease the corners while retaining the large, angular rock formations.
+    function trace(points) {
+        let d = `M ${points[0].join(',')}`;
+        for (let i = 1; i < points.length; i++) {
+            const a = points[i - 1], b = points[i];
+            const prev = points[Math.max(0, i - 2)], next = points[Math.min(points.length - 1, i + 1)];
+            const tension = .065;
+            d += ` C ${a[0] + (b[0] - prev[0]) * tension},${a[1] + (b[1] - prev[1]) * tension}`;
+            d += ` ${b[0] - (next[0] - a[0]) * tension},${b[1] - (next[1] - a[1]) * tension} ${b.join(',')}`;
+        }
+        return d;
+    }
+
+    // Shared composition keeps a deep valley open; randomness changes the geology within it.
+    function ridge(profile, shift, roughness) {
+        const anchors = profile.map(([x, y], i) => [
+            x + (i > 0 && i < profile.length - 1 ? random(-4, 4) : 0),
+            y + shift + random(-roughness, roughness)
+        ]);
+        const points = [anchors[0]];
+        for (let i = 1; i < anchors.length; i++) {
+            const a = anchors[i - 1], b = anchors[i];
+            const t = random(.4, .6);
+            points.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t + random(-2, 2)]);
+            points.push(b);
+        }
+        return points;
+    }
+
+    function mountainIcon() {
+        const name = paletteSelect.value || pick(Object.keys(palettes));
+        const [sky, haze, distant, rock, shadow, foreground, sunlight] = palettes[name];
+        const id = `landscape-${++serial}`;
+        const mirror = Math.random() < .5;
+        let defs = `<clipPath id="${id}-circle"><circle cx="100" cy="100" r="100"/></clipPath>`;
+        function gradient(key, stops, x1 = 0, y1 = 0, x2 = 150, y2 = 200) {
+            defs += `<linearGradient id="${id}-${key}" gradientUnits="userSpaceOnUse" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">`;
+            defs += stops.map((color, i) => `<stop offset="${i / (stops.length - 1)}" stop-color="${color}"/>`).join('') + '</linearGradient>';
+            return `url(#${id}-${key})`;
+        }
+        function glow(key, color, cx, cy, rx, ry, opacity) {
+            defs += `<radialGradient id="${id}-${key}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="translate(${cx} ${cy}) scale(${rx} ${ry})">`;
+            defs += `<stop stop-color="${color}" stop-opacity="${opacity}"/><stop offset=".45" stop-color="${color}" stop-opacity="${opacity * .5}"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></radialGradient>`;
+            return `<path d="M0 0H200V200H0Z" fill="url(#${id}-${key})"/>`;
+        }
+        const lightX = random(104, 148), lightY = random(62, 87);
+        const horizonLight = mix(haze, '#fff4df', name === 'Violet' ? .18 : .4);
+        // Cooler overhead air gives way to a luminous, warmer horizon.
+        const skyPaint = gradient('sky', [mix(sky, shadow, random(.1, .2)), sky, mix(haze, horizonLight, .55)], 65, -35, 125, 145);
+        let shapes = `<path fill="${skyPaint}" d="M0 0H200V200H0Z"/>`;
+        shapes += glow('horizon', horizonLight, lightX, lightY + 35, 122, 82, .72);
+        shapes += glow('open-sky', mix(sky, distant, .35), 18, 8, 155, 130, .22);
+        shapes += glow('sunlight', mix(horizonLight, sunlight, .12), lightX - 10, lightY - 8, 58, 49, .28);
+        // Broad, barely visible cirrus breaks up the gradient without competing with the ridges.
+        defs += `<filter id="${id}-cloud" x="-25%" y="-100%" width="150%" height="300%"><feGaussianBlur stdDeviation="2.5"/></filter>`;
+        for (let cloud = 0; cloud < 2; cloud++) {
+            const y = random(22, 53) + cloud * 17;
+            const x = random(5, 32), width = random(95, 155);
+            shapes += `<path d="M ${x},${y} C ${x + width * .3},${y - 7} ${x + width * .55},${y + 7} ${x + width},${y - 4} C ${x + width * .7},${y + 12} ${x + width * .32},${y + 1} ${x},${y + 3} Z" fill="${horizonLight}" opacity="${random(.08, .14)}" filter="url(#${id}-cloud)"/>`;
+        }
+        const shift = random(-8, 8);
+        const profiles = [
+            // Far peaks, softened by atmospheric light.
+            [[-12,133],[25,123],[49,109],[72,114],[96,88],[110,78],[128,85],[147,64],[165,71],[188,60],[212,38]],
+            // A second range rising on the opposite side of the valley.
+            [[-12,202],[35,189],[67,164],[91,147],[111,126],[129,121],[150,116],[168,97],[189,66],[212,49]],
+            // The dominant cliff: tall shoulders and a steep, irregular descent.
+            [[-12,-15],[14,2],[30,21],[39,51],[57,66],[69,93],[77,121],[91,137],[106,165],[143,186],[212,213]],
+            // A closer ridge on the right, crossing the foot of the main cliff.
+            [[-12,230],[42,214],[77,188],[104,159],[124,145],[143,143],[166,131],[187,108],[212,76]],
+            // Dark foreground rock creates a final change of scale.
+            [[-12,62],[12,91],[28,112],[44,134],[62,143],[76,164],[91,174],[115,203],[153,223],[212,239]]
+        ];
+        const lit = mix(rock, sunlight, name === 'Rose' || name === 'Ember' ? random(.65, .9) : random(.12, .35));
+        const lean = random(-15, 15);
+        const paints = [
+            [mix(distant, horizonLight, random(.3, .45)), mix(distant, haze, .15), distant],
+            [mix(distant, haze, .12), mix(rock, distant, .35), shadow],
+            [lit, rock, mix(rock, shadow, .6)],
+            [mix(rock, shadow, .2), shadow, foreground],
+            [shadow, mix(shadow, foreground, .65), foreground]
+        ];
+        // A faint, smaller range establishes a horizon beyond the main mountains.
+        const remote = ridge([
+            [-12,122],[20,111],[44,104],[62,91],[76,95],[91,81],[105,85],
+            [121,68],[135,73],[153,58],[164,60],[178,46],[193,52],[212,35]
+        ], shift + random(-6, 3), 2.5);
+        const remotePaint = gradient('remote', [mix(distant, haze, .5), mix(distant, horizonLight, .7)], 70, 45, 140, 150);
+        defs += `<filter id="${id}-distance" x="-5%" y="-5%" width="110%" height="110%"><feGaussianBlur stdDeviation=".35"/></filter>`;
+        shapes += `<path d="${trace(remote)} L 220,245 L -20,245 Z" fill="${remotePaint}" opacity=".7" filter="url(#${id}-distance)"/>`;
+        profiles.forEach((profile, layer) => {
+            const shapedProfile = profile.map(([x, y]) => [x + lean * Math.sin(Math.max(0, Math.min(1, x / 200)) * Math.PI), y]);
+            const points = ridge(shapedProfile, shift + random(-5, 5), layer === 0 ? 5 : 4);
+            const outline = `${trace(points)} L 220,245 L -20,245 Z`;
+            const paint = gradient(`rock-${layer}`, paints[layer], 25, 25, layer === 2 ? 80 : 180, 210);
+            defs += `<clipPath id="${id}-rock-clip-${layer}"><path d="${outline}"/></clipPath>`;
+            shapes += `<path d="${outline}" fill="${paint}"/>`;
+            let relief = '';
+            // Unequal, tapering folds follow the fall of the rock, rather than repeated triangles.
+            for (let fold = 0; fold < [0, 1, 3, 2, 2][layer]; fold++) {
+                const index = 2 + fold * 5 + Math.floor(random(0, 3));
+                const [x, y] = points[index];
+                const drift = (layer === 2 || layer === 4 ? 1 : -1) * random(25, 60);
+                const spine = [[x, y]];
+                for (let step = 1; step <= 5; step++) {
+                    const t = step / 5;
+                    spine.push([x + drift * t + random(-6, 6) * Math.sin(t * Math.PI), y + (240 - y) * t]);
+                }
+                const width = random(15, 34);
+                const outer = spine.map(([rx, ry], i) => [rx + width * Math.sin(i / 5 * Math.PI / 2), ry]).reverse();
+                const face = `${trace(spine)} ${outer.map(point => `L ${point.join(',')}`).join(' ')} Z`;
+                const shade = gradient(`fold-${layer}-${fold}`, [mix(paints[layer][0], shadow, .15), shadow], x, y, x + drift, 240);
+                relief += `<path d="${face}" fill="${shade}" opacity="${random(.07, .15)}"/>`;
+                const rim = spine.map(([rx, ry], i) => [rx - Math.sin(i / 5 * Math.PI) * 3, ry]).reverse();
+                relief += `<path d="${trace(spine)} ${rim.map(point => `L ${point.join(',')}`).join(' ')} Z" fill="${sunlight}" opacity=".025"/>`;
+            }
+            shapes += `<g clip-path="url(#${id}-rock-clip-${layer})">${relief}</g>`;
+            // Mist sits between ranges, keeping the near rock crisp and the background airy.
+            if (layer < 2) shapes += glow(`mist-${layer}`, horizonLight, lightX, 125 + layer * 24, 89, 55, layer === 0 ? .25 : .13);
+        });
+        // A broad wash of reflected sky light ties the distant valley and cliff faces together.
+        shapes += glow('reflected-light', haze, lightX, 115, 96, 92, .09);
+        // Fine grain keeps the large gradients from looking like flat digital color bands.
+        defs += `<filter id="${id}-grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" stitchTiles="stitch" seed="${Math.floor(random(1, 10000))}"/><feColorMatrix type="saturate" values="0"/></filter>`;
+        shapes += `<path d="M0 0H200V200H0Z" filter="url(#${id}-grain)" opacity=".025"/>`;
+        return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" aria-hidden="true"><defs>${defs}</defs><g clip-path="url(#${id}-circle)"><g${mirror ? ' transform="translate(200 0) scale(-1 1)"' : ''}>${shapes}</g></g></svg>`;
+    }
+
+    function regenerate() {
+        gallery.replaceChildren();
+        for (let i = 0; i < 12; i++) {
+            const button = document.createElement('button');
+            button.className = 'icon';
+            button.setAttribute('aria-label', `Regenerate landscape ${i + 1}`);
+            button.title = 'Generate another landscape';
+            button.innerHTML = mountainIcon();
+            button.addEventListener('click', () => { button.innerHTML = mountainIcon(); });
+            gallery.append(button);
+        }
+    }
+    document.querySelector('#regenerate').addEventListener('click', regenerate);
+    paletteSelect.addEventListener('change', regenerate);
+    regenerate();
+</script>
+</html>
