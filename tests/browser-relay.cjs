@@ -16,6 +16,7 @@ const { serve } = require('../scripts/serve-tests.cjs');
         async function prepare(page) {
             page.on('pageerror', error => errors.push(error.message));
             await page.addInitScript(() => {
+                HTMLMediaElement.prototype.play = () => Promise.reject(new DOMException('Autoplay blocked', 'NotAllowedError'));
                 window.rtcCount = 0;
                 window.RTCPeerConnection = new Proxy(window.RTCPeerConnection, {
                     construct(target, args) { window.rtcCount++; return new target(...args); }
@@ -40,11 +41,13 @@ const { serve } = require('../scripts/serve-tests.cjs');
         assert.equal(await a.evaluate(() => rtcCount), 0);
         assert.equal(await b.evaluate(() => rtcCount), 0);
         // Select immediately, before any WebRTC connection exists.
-        await a.evaluate(() => {
+        const waitingStatus = await a.evaluate(() => {
             RTCPeer.config.iceServers = [];
             const bytes = Uint8Array.from({ length: 1200000 }, (_, i) => i % 251);
             Events.fire('files-selected', { to: document.querySelector('x-peer').id, files: [new File([bytes], 'test.bin')] });
+            return document.querySelector('x-peer .status').textContent;
         });
+        assert.equal(waitingStatus, 'Connecting…');
         await b.waitForFunction(() => receivedFiles.length === 1, null, { timeout: 30000 });
         assert.deepEqual(await b.evaluate(() => receivedFiles), [{ size: 1200000, exact: true }]);
         assert.equal(await a.evaluate(() => rtcCount), 1);

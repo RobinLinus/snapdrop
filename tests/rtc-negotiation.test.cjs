@@ -595,3 +595,23 @@ test('pasted logs are single-string JSON with exact ICE hostnames and no SDP or 
     const output = JSON.stringify(t.logs);
     for (const secret of ['secret-password', 'secret-fragment', 'private-shared-text']) assert.ok(!output.includes(secret));
 });
+
+test('queued file stays visible through connection retry and is sent once after verification', async () => {
+    const t = setup();
+    const dispatched = [];
+    t.Peer.prototype.sendFiles = files => dispatched.push(...files);
+    const peer = new t.RTCPeer(t.server, 'phone', 'session', true);
+    const file = { name: 'selected.bin' };
+    peer.sendFiles([file]);
+    assert.equal(t.events.at(-1).detail.status, 'Connecting…');
+    await peer._operations;
+    peer._supportsReversal = true;
+    peer._failConnection(peer._conn, 'connection-timeout');
+    assert.equal(t.events.at(-1).detail.status, 'Retrying connection…');
+    assert.equal(peer._pendingFiles[0], file);
+    peer._confirmConnection(peer._conn, 'passed');
+    peer._confirmConnection(peer._conn, 'passed');
+    assert.deepEqual(dispatched, [file]);
+    assert.equal(peer._pendingFiles, null);
+    peer.close();
+});

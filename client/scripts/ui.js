@@ -1,6 +1,7 @@
 const $ = query => document.getElementById(query);
 const $$ = query => document.body.querySelector(query);
 const isURL = text => /^((https?:\/\/|www)[^\s]+)/g.test(text.toLowerCase());
+const playNotificationSound = () => { window.blop.play().catch(() => {}); };
 window.isDownloadSupported = (typeof document.createElement('a').download !== 'undefined');
 window.isProductionEnvironment = !window.location.host.startsWith('localhost');
 window.iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
@@ -50,7 +51,7 @@ class PeersUI {
         const peerId = progress.sender || progress.recipient;
         const $peer = $(peerId);
         if (!$peer) return;
-        $peer.ui.setProgress(progress.progress);
+        $peer.ui.setProgress(progress.progress, progress.status);
     }
 
     _clearPeers() {
@@ -149,7 +150,8 @@ class PeerUI {
         $input.value = null; // reset input
     }
 
-    setProgress(progress) {
+    setProgress(progress, status) {
+        this.$el.querySelector('.status').textContent = status || (progress > 0 && progress < 1 ? 'Transferring…' : '');
         if (progress > 0) {
             this.$el.setAttribute('transfer', '1');
         }
@@ -287,7 +289,7 @@ class ReceiveDialog extends Dialog {
         super('receiveDialog');
         Events.on('file-received', e => {
             this._nextFile(e.detail);
-            window.blop.play();
+            playNotificationSound();
         });
         this._filesQueue = [];
     }
@@ -426,7 +428,7 @@ class ReceiveTextDialog extends Dialog {
             this.$text.textContent = text;
         }
         this.show();
-        window.blop.play();
+        playNotificationSound();
     }
 
     async _onCopy() {
@@ -697,5 +699,5 @@ which can be accessed by clicking the lock icon next to the URL.`;
 document.body.onclick = e => { // safari hack to fix audio
     document.body.onclick = null;
     if (!(/.*Version.*Safari.*/.test(navigator.userAgent))) return;
-    blop.play();
+    playNotificationSound();
 }

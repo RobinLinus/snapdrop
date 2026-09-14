@@ -29,7 +29,7 @@ class ConnectionLog {
     }
 }
 // Bump with the service-worker cache version for each client release.
-ConnectionLog.clientVersion = 'v18';
+ConnectionLog.clientVersion = 'v19';
 ConnectionLog.page = Math.random().toString(36).slice(2, 10);
 ConnectionLog.write('client-start', { userAgent: typeof navigator === 'undefined' ? undefined : navigator.userAgent });
 
@@ -184,6 +184,7 @@ class Peer {
     }
 
     _sendFile(file) {
+        Events.fire('file-progress', { sender: this._peerId, progress: 0, status: 'Sending…' });
         this.sendJSON({
             type: 'header',
             name: file.name,
@@ -240,6 +241,7 @@ class Peer {
     }
 
     _onFileHeader(header) {
+        Events.fire('file-progress', { sender: this._peerId, progress: 0, status: 'Receiving…' });
         this._lastProgress = 0;
         this._digester = new FileDigester({
             name: header.name,
@@ -499,6 +501,9 @@ class RTCPeer extends Peer {
         if (!this._connectedOnce && !this._reversed && this._supportsReversal) return this._reverseRoles();
         this._closeConnection();
         this._needsRecovery = true;
+        if (this._pendingFiles) Events.fire('file-progress', {
+            sender: this._peerId, progress: 0, status: 'Connection failed'
+        });
         if (!this._connectedOnce) Events.fire('connection-failed', { peerId: this._peerId });
         Events.fire('notify-user', 'Could not connect to this device. Check local network access and try again.');
     }
@@ -610,6 +615,7 @@ class RTCPeer extends Peer {
             return;
         }
         this._pendingFiles = [...pending, ...files];
+        Events.fire('file-progress', { sender: this._peerId, progress: 0, status: 'Connecting…' });
         this.refresh();
     }
 
@@ -632,6 +638,9 @@ class RTCPeer extends Peer {
         // Both endpoints may fail at once: flip only once and ignore duplicate requests.
         if (this._closed || this._reversed) return;
         this._reversed = true;
+        if (this._pendingFiles) Events.fire('file-progress', {
+            sender: this._peerId, progress: 0, status: 'Retrying connection…'
+        });
         if (notify) this._sendSignal({ restart: true, reverse: true });
         const isCaller = !this._isCaller;
         this._closeConnection();
@@ -640,6 +649,9 @@ class RTCPeer extends Peer {
 
     retryConnection() {
         if (this._closed || !this._needsRecovery || this._isConnected()) return;
+        if (this._pendingFiles) Events.fire('file-progress', {
+            sender: this._peerId, progress: 0, status: 'Retrying connection…'
+        });
         this._sendSignal({ restart: true });
         this._closeConnection();
         this._connect(this._peerId, this._isCaller === true);

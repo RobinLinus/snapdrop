@@ -266,10 +266,6 @@ x-peer .status {
     opacity: 0.7;
 }
 
-x-peer[transfer] .status:before {
-    content: 'Transferring...';
-}
-
 x-peer x-icon {
     animation: pop 600ms ease-out 1;
 }
