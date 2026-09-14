@@ -3,7 +3,8 @@ window.isRtcSupported = !!(window.RTCPeerConnection || window.mozRTCPeerConnecti
 class ConnectionLog {
     static write(event, details = {}) {
         const line = 'Snapdrop: ' + JSON.stringify({
-            version: 2, time: new Date().toISOString(), page: ConnectionLog.page, event, ...details
+            version: 2, time: new Date().toISOString(), page: ConnectionLog.page, event, ...details,
+            clientVersion: ConnectionLog.clientVersion
         });
         if (event.endsWith('-error')) console.error(line);
         else console.log(line);
@@ -27,6 +28,8 @@ class ConnectionLog {
         return details;
     }
 }
+// Bump with the service-worker cache version for each client release.
+ConnectionLog.clientVersion = 'v16';
 ConnectionLog.page = Math.random().toString(36).slice(2, 10);
 ConnectionLog.write('client-start', { userAgent: typeof navigator === 'undefined' ? undefined : navigator.userAgent });
 

@@ -26,9 +26,13 @@ node --check client/scripts/network.js
 node --check client/scripts/ui.js
 ```
 
-For client changes, increment `CACHE_NAME` in `client/service-worker.js` to a
-new, unused version. The client caches assets, so replacing files alone is not
-enough. Commit the cache version bump along with the other client changes.
+For client changes, increment `CACHE_NAME` in `client/service-worker.js` and
+`ConnectionLog.clientVersion` in `client/scripts/network.js` to the same new,
+unused release number (for example, `snapdrop-cache-v16` and `v16`). Every
+`Snapdrop:` log includes `clientVersion`, including the initial `client-start`.
+This value is embedded in the running script, so old tabs keep reporting their
+old version even after deployment. The separate `version: 2` field identifies
+the log format. Commit both version bumps along with the client changes.
 
 For WebRTC changes, also serve the repository with
 `python3 -m http.server 8766 --bind 127.0.0.1` and open

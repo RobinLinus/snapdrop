@@ -512,6 +512,8 @@ test('pasted logs are single-string JSON with exact ICE hostnames and no SDP or 
         assert.equal(typeof args[0], 'string');
         const record = JSON.parse(args[0].slice('Snapdrop: '.length));
         assert.equal(record.version, 2);
+        assert.equal(record.clientVersion, t.ConnectionLog.clientVersion);
+        assert.match(record.clientVersion, /^v\d+$/);
         assert.ok(record.time.endsWith('Z'));
         assert.ok(record.page);
     }

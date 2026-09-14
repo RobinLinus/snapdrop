@@ -199,7 +199,11 @@ if possible, through a successful retry. Compare:
 - ICE, DTLS, and data-channel connection states.
 
 Logging version 2 writes each event as one JSON string, so copying the console
-preserves nested fields without expanding objects. `time` is the event timestamp;
+preserves nested fields without expanding objects. Every event includes
+`clientVersion` (for example, `v16`), identifying the release of the running
+script rather than the server's current deployment. Compare this on both devices;
+`version: 2` is only the log format, and older clients may omit `clientVersion`.
+`time` is the event timestamp;
 `page` distinguishes page loads, while signaling session IDs distinguish connections.
 `ws-send` and `ws-receive` include SDP types, routing, retry flags, and candidate
 summaries. `rtc-diagnostics` includes state and candidate-pair statistics. Routine
