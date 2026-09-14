@@ -5,6 +5,8 @@ const vm = require('node:vm');
 
 function setup() {
     const connections = [], errors = [], sent = [], events = [];
+    const timers = new Map();
+    let nextTimer = 0;
     const tick = () => new Promise(resolve => setImmediate(resolve));
     class Connection {
         constructor() {
@@ -15,7 +17,7 @@ function setup() {
             connections.push(this);
         }
         createDataChannel() {
-            const channel = { readyState: 'connecting', close() { this.readyState = 'closed'; } };
+            const channel = { readyState: 'connecting', sent: [], send(data) { this.sent.push(JSON.parse(data)); }, close() { this.readyState = 'closed'; } };
             this.channels.push(channel);
             return channel;
         }
@@ -43,12 +45,14 @@ function setup() {
         window: { URL: {}, addEventListener() {}, dispatchEvent(event) { events.push(event); } },
         CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
         console: { log() {}, error(error) { errors.push(error); } },
+        setTimeout(callback, delay) { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
+        clearTimeout(id) { timers.delete(id); },
         RTCPeerConnection: Connection,
         RTCSessionDescription: class { constructor(value) { Object.assign(this, value); } },
         RTCIceCandidate: class { constructor(value) { Object.assign(this, value); } },
     });
     vm.runInContext(fs.readFileSync('client/scripts/network.js', 'utf8') + '\nthis.RTCPeer = RTCPeer; this.PeersManager = PeersManager;', context);
-    return { ...context, connections, errors, sent, events, server: { send(message) { sent.push(message); } } };
+    return { ...context, connections, errors, sent, events, timers, server: { send(message) { sent.push(message); } } };
 }
 
 test('repeated sends and refreshes during startup produce only one offer and channel', async () => {
@@ -278,4 +282,87 @@ test('legacy peers go straight to recovery instead of receiving an unsupported r
     assert.equal(t.connections.length, 1);
     assert.equal(t.sent.filter(m => m.reverse).length, 0);
     assert.equal(t.events.filter(e => e.type === 'connection-failed').length, 1);
+});
+
+
+async function checkablePeer() {
+    const t = setup();
+    t.peer = new t.RTCPeer(t.server, 'peer');
+    await t.peer.onServerMessage({ sender: 'peer', reversed: false, connectionCheck: true,
+        sdp: { type: 'answer', sdp: 'answer' } });
+    t.channel = t.peer._channel;
+    return t;
+}
+
+test('open channel must echo a probe before sending files; reply clears the deadline', async () => {
+    const t = await checkablePeer();
+    t.channel.readyState = 'open';
+    t.channel.onopen();
+    assert.equal(t.peer._isConnected(), false);
+    t.peer.sendFiles([{}]);
+    assert.equal(t.channel.sent.length, 1);
+    const probe = t.channel.sent[0];
+    assert.equal(probe.type, 'connection-check');
+    assert.equal([...t.timers.values()][0].delay, 5000);
+    t.channel.onmessage({ data: JSON.stringify({ type: 'connection-check-reply', id: probe.id + 1 }) });
+    assert.equal(t.peer._isConnected(), false);
+    t.channel.onmessage({ data: JSON.stringify({ type: 'connection-check-reply', id: probe.id }) });
+    assert.equal(t.peer._isConnected(), true);
+    assert.equal(t.peer._connectionCheck, 'passed');
+    assert.equal(t.timers.size, 0);
+    t.channel.onmessage({ data: JSON.stringify({ type: 'connection-check', id: 42 }) });
+    assert.equal(t.channel.sent[1].type, 'connection-check-reply');
+    assert.equal(t.channel.sent[1].id, 42);
+});
+
+test('stuck connecting retries automatically, then offers recovery; old deadlines cannot close the retry', async () => {
+    const t = await checkablePeer();
+    const original = t.peer._conn;
+    const deadline = [...t.timers.values()][0];
+    assert.equal(deadline.delay, 15000);
+    deadline.callback();
+    assert.equal(original.signalingState, 'closed');
+    assert.equal(t.peer._reversed, true);
+    const retry = t.peer._conn;
+    deadline.callback();
+    assert.equal(t.peer._conn, retry);
+    assert.equal(t.events.filter(e => e.type === 'connection-failed').length, 0);
+    [...t.timers.values()][0].callback();
+    assert.equal(t.peer._conn, null);
+    assert.equal(t.events.filter(e => e.type === 'connection-failed').length, 1);
+    assert.equal(t.timers.size, 0);
+});
+
+test('an open but unresponsive channel triggers the same bounded retry', async () => {
+    const t = await checkablePeer();
+    t.channel.readyState = 'open';
+    t.channel.onopen();
+    const lateReply = t.channel.onmessage;
+    const probe = t.channel.sent[0];
+    [...t.timers.values()][0].callback();
+    assert.equal(t.peer._reversed, true);
+    assert.equal(t.channel.readyState, 'closed');
+    lateReply({ data: JSON.stringify({ type: 'connection-check-reply', id: probe.id }) });
+    assert.equal(t.peer._connectedOnce, false);
+    t.peer.close();
+    assert.equal(t.timers.size, 0);
+});
+
+test('a channel closing before the failure event still triggers recovery', async () => {
+    const t = await checkablePeer();
+    t.channel.onclose();
+    assert.equal(t.peer._reversed, true);
+    assert.equal(t.connections.length, 2);
+});
+
+test('older clients remain usable without supporting the connection probe', async () => {
+    const t = setup();
+    const peer = new t.RTCPeer(t.server, 'peer');
+    await peer._operations;
+    peer._channel.readyState = 'open';
+    peer._channel.onopen();
+    assert.equal(peer._isConnected(), true);
+    assert.equal(peer._connectionCheck, 'unsupported');
+    assert.equal(peer._channel.sent.length, 0);
+    assert.equal(t.timers.size, 0);
 });

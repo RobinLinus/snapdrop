@@ -34,7 +34,20 @@ users can revoke it in [Chrome's site settings][media-settings].
 
 ### Snapdrop's recovery behavior
 
-If a connection fails before its data channel opens, Snapdrop first recreates the
+Snapdrop starts connecting automatically when a peer is discovered. Each new
+connection has a 15-second deadline to open its data channel. When both clients
+support the check, each sends a small `connection-check` message through that
+channel and expects its matching reply within 5 seconds. Transfers become ready
+only after the round trip succeeds; this tests the actual data path, not the
+WebSocket signaling path. No microphone or file access is involved.
+
+The console reports `reason: "connection-verified"` and `connectionCheck: "passed"`
+on success. This is a startup check, not a continuous heartbeat or a guarantee
+that later transfers cannot fail. Older clients use channel-open readiness and
+report `connectionCheck: "unsupported"`. Timers may run late in background tabs.
+
+If connecting or verification times out, or the connection fails before it is
+verified, Snapdrop first recreates the
 connection with the offerer and answerer roles reversed. Either endpoint can
 request this retry; simultaneous requests swap roles only once. Signals carry an
 attempt marker so delayed SDP/ICE from the original attempt cannot affect the
@@ -42,7 +55,7 @@ new connection. There is at most one automatic role swap per peer object, and
 no page reload or permission request is needed. Older cached peers that do not
 advertise support skip the role swap and go directly to the recovery flow.
 
-If the reversed attempt also fails, the client offers an optional
+If the reversed attempt also fails or times out, the client offers an optional
 microphone-permission workaround to Chrome/Chromium user agents that expose
 `getUserMedia`. The behavior was investigated on desktop Chrome; the user-agent
 check does not guarantee that every matching browser behaves identically.
@@ -69,7 +82,9 @@ the [negotiation tests](../tests/rtc-negotiation.test.cjs), and the
 [recovery tests](../tests/connection-recovery.test.cjs). Serve the repository root
 and open `tests/rtc-transfer.html?reverse` for a real-browser regression test:
 it swaps an established pair's roles and verifies an exact 1,200,000-byte transfer.
-The unit tests simulate initial failure on either endpoint or both at once.
+Use `?unresponsive` to drop the initial probe replies and verify automatic
+recovery and a subsequent transfer. The unit tests also simulate initial failure
+on either endpoint or both at once.
 
 ### What we observed, and what remains uncertain
 
@@ -122,6 +137,8 @@ a two-browser test on one computer from a test across two devices.
 Capture the `RTC diagnostics:` lines from both endpoints through failure and,
 if possible, through a successful retry. Compare:
 
+- Round-trip result (`connecting`, `pending`, `passed`, or `unsupported`) and
+  timeout reason (`connection-timeout` or `connection-check-timeout`).
 - Attempt (`initial` or `reversed`) and local role (`offerer` or `answerer`).
 - SDP state and signaling errors: did the offer/answer exchange finish?
 - Host candidate address kinds: `mdns`, `ipv4`, or `ipv6`.

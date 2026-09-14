@@ -4,12 +4,25 @@
 const result = document.getElementById('result');
 let done = false;
 const reverse = new URLSearchParams(location.search).has('reverse');
+const unresponsive = new URLSearchParams(location.search).has('unresponsive');
 const recovery = new URLSearchParams(location.search).has('recovery');
 let restarted = false;
 const fail = error => { done = true; result.textContent = 'FAIL: ' + error; };
 window.addEventListener('unhandledrejection', e => fail(e.reason));
 
 const relay = (receiver, sender, message) => setTimeout(() => receiver.onServerMessage({...JSON.parse(JSON.stringify(message)), sender}), 0);
+// Simulate an open channel whose first round-trip check gets no reply.
+if (unresponsive) {
+ const setChannel = RTCPeer.prototype._setChannel;
+ RTCPeer.prototype._setChannel = function(channel, conn) {
+  const send = channel.send.bind(channel);
+  channel.send = data => {
+   if (!this._reversed && typeof data === 'string' && JSON.parse(data).type === 'connection-check-reply') return;
+   send(data);
+  };
+  setChannel.call(this, channel, conn);
+ };
+}
 let caller;
 const callee = new RTCPeer({send: message => relay(caller, 'callee', message)});
 caller = new RTCPeer({send: message => relay(callee, 'caller', message)}, 'callee');
@@ -21,13 +34,14 @@ Events.on('file-received', async event => {
   const actual = new Uint8Array(await event.detail.blob.arrayBuffer());
   if (actual.length !== bytes.length || actual.some((byte,i) => byte !== bytes[i])) throw Error('File bytes differ');
   done = true;
-  result.textContent = 'PASS: ' + (reverse ? 'reversed offerer/answerer roles without reloading; ' : recovery ? 'receiver reestablished the connection without reloading; ' : 'one connection after 20 refreshes; ') + 'transferred 1,200,000 bytes with exact content match.';
+  result.textContent = 'PASS: ' + (unresponsive ? 'unanswered probe triggered automatic reversed retry; ' : reverse ? 'reversed offerer/answerer roles without reloading; ' : recovery ? 'receiver reestablished the connection without reloading; ' : 'one connection after 20 refreshes; ') + 'verified a data-channel round trip on both endpoints; transferred 1,200,000 bytes with exact content match.';
   caller.close(); callee.close();
  } catch(error) { fail(error); }
 });
 const timer = setInterval(() => {
  if (done) return clearInterval(timer);
  if (caller._isConnected() && callee._isConnected()) {
+  if (unresponsive && (!caller._reversed || !callee._reversed)) return fail('Unresponsive connection was not retried');
   if (reverse && !restarted) {
    restarted = true;
    callee._reverseRoles();
@@ -41,6 +55,7 @@ const timer = setInterval(() => {
    callee.retryConnection();
    return;
   }
+  if (caller._connectionCheck !== 'passed' || callee._connectionCheck !== 'passed') return fail('Round-trip check did not pass');
   clearInterval(timer);
   result.textContent = 'Connected. Transferring file…';
   caller.sendFiles([new File([bytes], 'test.bin')]);

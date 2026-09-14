@@ -243,6 +243,8 @@ class RTCPeer extends Peer {
         const conn = new RTCPeerConnection(RTCPeer.config);
         this._conn = conn;
         this._connectedOnce = false;
+        this._connectionCheck = 'connecting';
+        this._armConnectionTimeout(conn, 15000, 'connection-timeout');
         this._needsRecovery = false;
         this._pendingIce = [];
         this._lastOffer = null;
@@ -274,14 +276,7 @@ class RTCPeer extends Peer {
         conn.onconnectionstatechange = () => {
             if (this._conn !== conn) return;
             console.log('RTC: state changed:', conn.connectionState);
-            if (conn.connectionState === 'failed') {
-                this._reportDiagnostics(conn, 'connection-failed');
-                if (!this._connectedOnce && !this._reversed && this._supportsReversal) return this._reverseRoles();
-                this._closeConnection();
-                this._needsRecovery = !this._connectedOnce;
-                if (this._needsRecovery) Events.fire('connection-failed', { peerId: this._peerId });
-                Events.fire('notify-user', 'Could not connect to this device. Check local network access and try again.');
-            }
+            if (conn.connectionState === 'failed') this._failConnection(conn, 'connection-failed');
         };
         conn.ondatachannel = event => this._setChannel(event.channel, conn);
         if (isCaller) {
@@ -309,6 +304,7 @@ class RTCPeer extends Peer {
     onServerMessage(message) {
         if (this._closed) return;
         // Older cached clients do not understand role swaps.
+        if (message.connectionCheck === true) this._supportsConnectionCheck = true;
         if (typeof message.reversed === 'boolean') this._supportsReversal = true;
         if (message.reverse) {
             if (this._isCaller !== undefined) this._reverseRoles(false);
@@ -370,21 +366,63 @@ class RTCPeer extends Peer {
         this._channel = channel;
         channel.binaryType = 'arraybuffer';
         channel.onopen = () => {
-            if (this._conn === conn) {
-                this._connectedOnce = true;
-                console.log('RTC: channel opened with', this._peerId);
-                this._reportDiagnostics(conn, 'channel-open');
-            }
+            if (this._conn !== conn) return;
+            if (!this._supportsConnectionCheck) return this._confirmConnection(conn, 'unsupported');
+            this._connectionCheck = 'pending';
+            this._checkId = (this._checkId || 0) + 1;
+            this._armConnectionTimeout(conn, 5000, 'connection-check-timeout');
+            // Send over the data channel itself, before allowing file transfers.
+            channel.send(JSON.stringify({ type: 'connection-check', id: this._checkId }));
         };
         channel.onmessage = event => {
-            if (this._conn === conn) this._onMessage(event.data);
+            if (this._conn !== conn) return;
+            if (typeof event.data === 'string') {
+                const message = JSON.parse(event.data);
+                if (message.type === 'connection-check') {
+                    channel.send(JSON.stringify({ type: 'connection-check-reply', id: message.id }));
+                    return;
+                }
+                if (message.type === 'connection-check-reply') {
+                    if (this._connectionCheck === 'pending' && message.id === this._checkId) {
+                        this._confirmConnection(conn, 'passed');
+                    }
+                    return;
+                }
+            }
+            this._onMessage(event.data);
         };
         channel.onclose = () => {
-            if (this._conn === conn) this._closeConnection();
+            if (this._conn !== conn) return;
+            if (!this._connectedOnce) this._failConnection(conn, 'channel-closed-before-verification');
+            else this._closeConnection();
         };
     }
 
+    _armConnectionTimeout(conn, delay, reason) {
+        clearTimeout(this._connectionTimer);
+        this._connectionTimer = setTimeout(() => this._failConnection(conn, reason), delay);
+    }
+
+    _confirmConnection(conn, result) {
+        if (this._conn !== conn) return;
+        clearTimeout(this._connectionTimer);
+        this._connectedOnce = true;
+        this._connectionCheck = result;
+        this._reportDiagnostics(conn, result === 'passed' ? 'connection-verified' : 'channel-open');
+    }
+
+    _failConnection(conn, reason) {
+        if (this._conn !== conn || this._closed) return;
+        this._reportDiagnostics(conn, reason);
+        if (!this._connectedOnce && !this._reversed && this._supportsReversal) return this._reverseRoles();
+        this._closeConnection();
+        this._needsRecovery = !this._connectedOnce;
+        if (this._needsRecovery) Events.fire('connection-failed', { peerId: this._peerId });
+        Events.fire('notify-user', 'Could not connect to this device. Check local network access and try again.');
+    }
+
     _closeConnection() {
+        clearTimeout(this._connectionTimer);
         const conn = this._conn;
         const channel = this._channel;
         this._conn = null;
@@ -436,6 +474,7 @@ class RTCPeer extends Peer {
         const report = {
             version: 1, reason, peer: this._peerId,
             attempt: this._reversed ? 'reversed' : 'initial',
+            connectionCheck: this._connectionCheck,
             role: this._isCaller ? 'offerer' : 'answerer',
             connection: conn.connectionState, ice: conn.iceConnectionState,
             gathering: conn.iceGatheringState, signaling: conn.signalingState,
@@ -488,6 +527,7 @@ class RTCPeer extends Peer {
 
     _sendSignal(signal) {
         if (signal.sdp) this._diagnostics.descriptionsSent.push(signal.sdp.type);
+        signal.connectionCheck = true;
         signal.reversed = !!this._reversed;
         signal.type = 'signal';
         signal.to = this._peerId;
@@ -516,7 +556,7 @@ class RTCPeer extends Peer {
     }
 
     _isConnected() {
-        return this._channel && this._channel.readyState === 'open';
+        return this._connectedOnce && this._channel && this._channel.readyState === 'open';
     }
 }
 
