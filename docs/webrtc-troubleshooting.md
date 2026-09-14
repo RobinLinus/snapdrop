@@ -197,6 +197,32 @@ previously made the sender an offerer again, discarding the successful role swap
 and checks that a subsequent send initiates recovery with the roles preserved,
 then transfers an exact 1,200,000-byte file after verification.
 
+### Browser dumps: a working IPv6 path loses ICE replies
+
+Paired browser dumps captured on 2026-09-14 matched two offer/answer exchanges
+between Chrome 151.0.7922.137 and Chrome 150.0.7871.129. The SDP sent by each
+endpoint matched the other's received SDP. Both attempts established a UDP/IPv6
+data channel. For each attempt, the selected pair's check-response count reached
+seven, then stopped increasing on both endpoints while sent-check counts kept
+increasing. The selected pair did not change. Both reported `disconnected` roughly
+15 seconds after connecting, followed by `failed` about 10 seconds later.
+
+No renegotiation or application `close()` preceded the loss. On the first attempt,
+Chrome reported failure at 05:14:51.745 UTC and the application closed the peer
+connection immediately afterward. The second attempt repeated the pattern with
+fresh UDP ports. The ordinary WebRTC-Internals exports retained only current
+connections; the RTCStats exports also retained the removed connections, making
+them useful for reconstructing the first attempt.
+
+These traces establish loss of ICE check responses after a working data path;
+they do not locate the loss in the browser, OS, or Wi-Fi network. `requestsSent`
+is a browser counter, not proof that a packet reached the physical network.
+Adding application keepalives is not an established fix: native ICE checks were
+already running. A useful controlled comparison is to keep the same two Macs
+and Wi-Fi, replace one Chrome endpoint with Safari, and test transfers immediately
+and after 60 seconds. A stable result would narrow the investigation to behavior
+that differs between those browser pairs, without proving a specific cause.
+
 ### Capturing both endpoints
 
 Record browser and OS versions, which browser runs on each physical device,
