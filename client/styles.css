@@ -491,6 +491,12 @@ button::-moz-focus-inner {
     max-height: 300px;
 }
 
+.textarea::selection,
+.textarea ::selection {
+    background: #c2dbff;
+    color: #202124;
+}
+
 
 /* Info Animation */
 
