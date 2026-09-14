@@ -1,5 +1,6 @@
 window.URL = window.URL || window.webkitURL;
 window.isRtcSupported = !!(window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection);
+console.log('RTC diagnostics enabled (v1)');
 
 class ServerConnection {
 
@@ -230,132 +231,292 @@ class RTCPeer extends Peer {
 
     constructor(serverConnection, peerId) {
         super(serverConnection, peerId);
-        if (!peerId) return; // we will listen for a caller
-        this._connect(peerId, true);
+        this._operations = Promise.resolve();
+        this._closed = false;
+        if (peerId) this._connect(peerId, true);
     }
 
     _connect(peerId, isCaller) {
-        if (!this._conn) this._openConnection(peerId, isCaller);
-
+        if (this._closed || this._conn) return;
+        this._peerId = peerId;
+        this._isCaller = isCaller;
+        const conn = new RTCPeerConnection(RTCPeer.config);
+        this._conn = conn;
+        this._connectedOnce = false;
+        this._needsRecovery = false;
+        this._pendingIce = [];
+        this._lastOffer = null;
+        this._ignoreOffer = false;
+        this._diagnostics = {
+            localCandidates: [], remoteCandidates: [], iceServerErrors: [],
+            descriptionsSent: [], descriptionsReceived: [], signalingErrors: []
+        };
+        conn.onicecandidate = event => {
+            if (this._conn === conn && event.candidate) {
+                this._diagnostics.localCandidates.push(RTCPeer._candidateSummary(event.candidate));
+                this._sendSignal({ ice: event.candidate });
+            }
+        };
+        conn.onicecandidateerror = event => {
+            if (this._conn !== conn) return;
+            // Omit local addresses, candidate strings, SDP, and credentials.
+            this._diagnostics.iceServerErrors.push({ url: event.url, code: event.errorCode });
+            this._reportDiagnostics(conn, 'ice-server-error');
+        };
+        conn.onicegatheringstatechange = () => {
+            if (this._conn === conn && conn.iceGatheringState === 'complete') {
+                this._reportDiagnostics(conn, 'gathering-complete');
+            }
+        };
+        conn.oniceconnectionstatechange = () => {
+            if (this._conn === conn) this._reportDiagnostics(conn, 'ice-state-change');
+        };
+        conn.onconnectionstatechange = () => {
+            if (this._conn !== conn) return;
+            console.log('RTC: state changed:', conn.connectionState);
+            if (conn.connectionState === 'failed') {
+                this._reportDiagnostics(conn, 'connection-failed');
+                if (!this._connectedOnce && !this._reversed && this._supportsReversal) return this._reverseRoles();
+                this._closeConnection();
+                this._needsRecovery = !this._connectedOnce;
+                if (this._needsRecovery) Events.fire('connection-failed', { peerId: this._peerId });
+                Events.fire('notify-user', 'Could not connect to this device. Check local network access and try again.');
+            }
+        };
+        conn.ondatachannel = event => this._setChannel(event.channel, conn);
         if (isCaller) {
-            this._openChannel();
-        } else {
-            this._conn.ondatachannel = e => this._onChannelOpened(e);
+            // Store the channel immediately so repeated sends cannot create more offers.
+            this._setChannel(conn.createDataChannel('data-channel', { ordered: true }), conn);
+            this._enqueue(conn, async () => {
+                const offer = await conn.createOffer();
+                if (this._conn !== conn) return;
+                await conn.setLocalDescription(offer);
+                if (this._conn === conn) this._sendSignal({ sdp: conn.localDescription });
+            });
         }
     }
 
-    _openConnection(peerId, isCaller) {
-        this._isCaller = isCaller;
-        this._peerId = peerId;
-        this._conn = new RTCPeerConnection(RTCPeer.config);
-        this._conn.onicecandidate = e => this._onIceCandidate(e);
-        this._conn.onconnectionstatechange = e => this._onConnectionStateChange(e);
-        this._conn.oniceconnectionstatechange = e => this._onIceConnectionStateChange(e);
-    }
-
-    _openChannel() {
-        const channel = this._conn.createDataChannel('data-channel', { 
-            ordered: true,
-            reliable: true // Obsolete. See https://developer.mozilla.org/en-US/docs/Web/API/RTCDataChannel/reliable
+    _enqueue(conn, operation) {
+        // SDP and ICE must be applied in order, including local offer creation.
+        this._operations = this._operations.then(async () => {
+            if (this._conn === conn && !this._closed) await operation();
+        }).catch(error => {
+            if (this._conn === conn && !this._closed) this._onError(error);
         });
-        channel.onopen = e => this._onChannelOpened(e);
-        this._conn.createOffer().then(d => this._onDescription(d)).catch(e => this._onError(e));
-    }
-
-    _onDescription(description) {
-        // description.sdp = description.sdp.replace('b=AS:30', 'b=AS:1638400');
-        this._conn.setLocalDescription(description)
-            .then(_ => this._sendSignal({ sdp: description }))
-            .catch(e => this._onError(e));
-    }
-
-    _onIceCandidate(event) {
-        if (!event.candidate) return;
-        this._sendSignal({ ice: event.candidate });
+        return this._operations;
     }
 
     onServerMessage(message) {
-        if (!this._conn) this._connect(message.sender, false);
-
-        if (message.sdp) {
-            this._conn.setRemoteDescription(new RTCSessionDescription(message.sdp))
-                .then( _ => {
-                    if (message.sdp.type === 'offer') {
-                        return this._conn.createAnswer()
-                            .then(d => this._onDescription(d));
-                    }
-                })
-                .catch(e => this._onError(e));
-        } else if (message.ice) {
-            this._conn.addIceCandidate(new RTCIceCandidate(message.ice));
+        if (this._closed) return;
+        // Older cached clients do not understand role swaps.
+        if (typeof message.reversed === 'boolean') this._supportsReversal = true;
+        if (message.reverse) {
+            if (this._isCaller !== undefined) this._reverseRoles(false);
+            return;
         }
+        // Ignore signals still in flight from the attempt before the role swap.
+        if (!!message.reversed !== !!this._reversed) return;
+        if (message.restart) {
+            // Permission retries preserve the current roles.
+            const isCaller = this._isCaller === true;
+            this._closeConnection();
+            this._connect(message.sender, isCaller);
+            return;
+        }
+        // Late answers and candidates must not resurrect a failed connection.
+        if (!this._conn) {
+            if (!message.sdp || message.sdp.type !== 'offer') return;
+            this._connect(message.sender, false);
+        }
+        const conn = this._conn;
+        if (message.sdp) this._diagnostics.descriptionsReceived.push(message.sdp.type);
+        if (message.ice) this._diagnostics.remoteCandidates.push(RTCPeer._candidateSummary(message.ice));
+        return this._enqueue(conn, async () => {
+            if (message.sdp) {
+                const description = message.sdp;
+                if (description.type === 'offer') {
+                    if (description.sdp === this._lastOffer) return;
+                    // Only the current callee yields when offers collide.
+                    this._ignoreOffer = conn.signalingState !== 'stable' && this._isCaller;
+                    if (this._ignoreOffer) return;
+                } else if (description.type !== 'answer' || conn.signalingState !== 'have-local-offer') {
+                    return;
+                }
+                await conn.setRemoteDescription(description);
+                if (this._conn !== conn) return;
+                this._ignoreOffer = false;
+                if (description.type === 'offer') {
+                    this._lastOffer = description.sdp;
+                    const answer = await conn.createAnswer();
+                    if (this._conn !== conn) return;
+                    await conn.setLocalDescription(answer);
+                    if (this._conn !== conn) return;
+                    this._sendSignal({ sdp: conn.localDescription });
+                }
+                for (const candidate of this._pendingIce.splice(0)) {
+                    if (this._conn !== conn) return;
+                    await conn.addIceCandidate(candidate);
+                }
+            } else if (message.ice) {
+                if (this._ignoreOffer) return;
+                if (!conn.remoteDescription) this._pendingIce.push(message.ice);
+                else await conn.addIceCandidate(message.ice);
+            }
+        });
     }
 
-    _onChannelOpened(event) {
-        console.log('RTC: channel opened with', this._peerId);
-        const channel = event.channel || event.target;
-        channel.binaryType = 'arraybuffer';
-        channel.onmessage = e => this._onMessage(e.data);
-        channel.onclose = e => this._onChannelClosed();
+    _setChannel(channel, conn) {
+        if (this._conn !== conn) return channel.close();
         this._channel = channel;
+        channel.binaryType = 'arraybuffer';
+        channel.onopen = () => {
+            if (this._conn === conn) {
+                this._connectedOnce = true;
+                console.log('RTC: channel opened with', this._peerId);
+                this._reportDiagnostics(conn, 'channel-open');
+            }
+        };
+        channel.onmessage = event => {
+            if (this._conn === conn) this._onMessage(event.data);
+        };
+        channel.onclose = () => {
+            if (this._conn === conn) this._closeConnection();
+        };
     }
 
-    _onChannelClosed() {
-        console.log('RTC: channel closed', this._peerId);
-        if (!this.isCaller) return;
-        this._connect(this._peerId, true); // reopen the channel
-    }
-
-    _onConnectionStateChange(e) {
-        console.log('RTC: state changed:', this._conn.connectionState);
-        switch (this._conn.connectionState) {
-            case 'disconnected':
-                this._onChannelClosed();
-                break;
-            case 'failed':
-                this._conn = null;
-                this._onChannelClosed();
-                break;
+    _closeConnection() {
+        const conn = this._conn;
+        const channel = this._channel;
+        this._conn = null;
+        this._channel = null;
+        this._pendingIce = [];
+        if (channel) {
+            channel.onopen = channel.onmessage = channel.onclose = null;
+            channel.close();
         }
+        if (conn) {
+            conn.onicecandidate = conn.onconnectionstatechange = conn.ondatachannel = null;
+            conn.onicecandidateerror = conn.onicegatheringstatechange = conn.oniceconnectionstatechange = null;
+            conn.close();
+        }
+        // Cancel any partial transfer; a new send starts from its header again.
+        this._filesQueue = [];
+        this._busy = false;
+        this._chunker = null;
+        this._digester = null;
     }
 
-    _onIceConnectionStateChange() {
-        switch (this._conn.iceConnectionState) {
-            case 'failed':
-                console.error('ICE Gathering failed');
-                break;
-            default:
-                console.log('ICE Gathering', this._conn.iceConnectionState);
-        }
+    close() {
+        this._closed = true;
+        this._closeConnection();
     }
 
     _onError(error) {
         console.error(error);
+        if (this._conn) {
+            this._diagnostics.signalingErrors.push({ name: error.name, state: this._conn.signalingState });
+            this._reportDiagnostics(this._conn, 'signaling-error');
+        }
+    }
+
+    static _candidateSummary(candidate) {
+        if (!candidate) return null;
+        const parts = (candidate.candidate || '').split(/\s+/);
+        const address = candidate.address || parts[4] || '';
+        return {
+            type: candidate.candidateType || candidate.type || parts[7] || 'end-of-candidates',
+            protocol: candidate.protocol || parts[2],
+            addressKind: !address ? 'unavailable' : address.endsWith('.local') ? 'mdns'
+                : address.includes(':') ? 'ipv6' : /^\d+\./.test(address) ? 'ipv4' : 'hostname'
+        };
+    }
+
+    async _reportDiagnostics(conn, reason) {
+        // Capture state before an asynchronous stats request or connection teardown.
+        const report = {
+            version: 1, reason, peer: this._peerId,
+            attempt: this._reversed ? 'reversed' : 'initial',
+            role: this._isCaller ? 'offerer' : 'answerer',
+            connection: conn.connectionState, ice: conn.iceConnectionState,
+            gathering: conn.iceGatheringState, signaling: conn.signalingState,
+            localDescription: conn.localDescription && conn.localDescription.type,
+            remoteDescription: conn.remoteDescription && conn.remoteDescription.type,
+            ...JSON.parse(JSON.stringify(this._diagnostics)),
+            pairs: [], transports: []
+        };
+        try {
+            const stats = await conn.getStats();
+            stats.forEach(stat => {
+                if (stat.type === 'candidate-pair') {
+                    report.pairs.push({
+                        local: RTCPeer._candidateSummary(stats.get(stat.localCandidateId)),
+                        remote: RTCPeer._candidateSummary(stats.get(stat.remoteCandidateId)),
+                        state: stat.state, nominated: stat.nominated,
+                        requestsSent: stat.requestsSent, responsesReceived: stat.responsesReceived,
+                        requestsReceived: stat.requestsReceived, responsesSent: stat.responsesSent,
+                        bytesSent: stat.bytesSent, bytesReceived: stat.bytesReceived
+                    });
+                } else if (stat.type === 'transport') {
+                    report.transports.push({ iceState: stat.iceState, dtlsState: stat.dtlsState });
+                }
+            });
+        } catch (error) {
+            report.statsError = error.name;
+        }
+        console.log('RTC diagnostics: ' + JSON.stringify(report));
+        return report;
+    }
+
+    _readyToSend() {
+        if (this._isConnected()) return true;
+        this.refresh();
+        Events.fire('notify-user', 'Device is not connected yet. Please try again when connected.');
+        return false;
+    }
+
+    sendFiles(files) {
+        if (this._readyToSend()) super.sendFiles(files);
+    }
+
+    sendText(text) {
+        if (this._readyToSend()) super.sendText(text);
     }
 
     _send(message) {
-        if (!this._channel) return this.refresh();
-        this._channel.send(message);
+        if (this._isConnected()) this._channel.send(message);
     }
 
     _sendSignal(signal) {
+        if (signal.sdp) this._diagnostics.descriptionsSent.push(signal.sdp.type);
+        signal.reversed = !!this._reversed;
         signal.type = 'signal';
         signal.to = this._peerId;
         this._server.send(signal);
     }
 
+    _reverseRoles(notify = true) {
+        // Both endpoints may fail at once: flip only once and ignore duplicate requests.
+        if (this._closed || this._reversed) return;
+        this._reversed = true;
+        if (notify) this._sendSignal({ restart: true, reverse: true });
+        const isCaller = !this._isCaller;
+        this._closeConnection();
+        this._connect(this._peerId, isCaller);
+    }
+
+    retryConnection() {
+        if (this._closed || !this._needsRecovery || this._isConnected()) return;
+        this._sendSignal({ restart: true });
+        this._closeConnection();
+        this._connect(this._peerId, this._isCaller === true);
+    }
+
     refresh() {
-        // check if channel is open. otherwise create one
-        if (this._isConnected() || this._isConnecting()) return;
-        this._connect(this._peerId, this._isCaller);
+        this._connect(this._peerId, true);
     }
 
     _isConnected() {
         return this._channel && this._channel.readyState === 'open';
-    }
-
-    _isConnecting() {
-        return this._channel && this._channel.readyState === 'connecting';
     }
 }
 
@@ -369,6 +530,11 @@ class PeersManager {
         Events.on('files-selected', e => this._onFilesSelected(e.detail));
         Events.on('send-text', e => this._onSendText(e.detail));
         Events.on('peer-left', e => this._onPeerLeft(e.detail));
+        Events.on('retry-failed-connections', () => {
+            Object.values(this.peers).forEach(peer => {
+                if (peer instanceof RTCPeer) peer.retryConnection();
+            });
+        });
     }
 
     _onMessage(message) {
@@ -407,8 +573,7 @@ class PeersManager {
     _onPeerLeft(peerId) {
         const peer = this.peers[peerId];
         delete this.peers[peerId];
-        if (!peer || !peer._peer) return;
-        peer._peer.close();
+        if (peer && peer.close) peer.close();
     }
 
 }

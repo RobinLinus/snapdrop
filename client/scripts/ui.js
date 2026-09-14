@@ -9,7 +9,7 @@ window.iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 Events.on('display-name', e => {
     const me = e.detail.message;
     const $displayName = $('displayName')
-    $displayName.textContent = 'You are known as ' + me.displayName;
+    $displayName.textContent = 'Your device: ' + me.displayName;
     $displayName.title = me.deviceName;
 });
 
@@ -222,6 +222,63 @@ class Dialog {
         this.$el.removeAttribute('show');
         document.activeElement.blur();
         window.blur();
+    }
+}
+
+class ConnectionRecoveryDialog extends Dialog {
+    constructor() {
+        super('connectionRecoveryDialog');
+        this.$retry = $('connectionRecoveryRetry');
+        this.$status = $('connectionRecoveryStatus');
+        this._offered = false;
+        this._pending = false;
+        try {
+            this._offered = sessionStorage.getItem('snapdrop-microphone-recovery') === 'offered';
+        } catch (_) { /* Storage may be unavailable in private browsing. */ }
+        Events.on('connection-failed', () => this._offer());
+        this.$retry.addEventListener('click', () => this._retry());
+    }
+
+    _offer() {
+        // This workaround is supported by desktop Chromium's media permission check.
+        if (this._offered || !/Chrome|Chromium/.test(navigator.userAgent)
+            || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+        this._offered = true;
+        this._cancelled = false;
+        try {
+            sessionStorage.setItem('snapdrop-microphone-recovery', 'offered');
+        } catch (_) { /* Keep the in-memory guard even without storage. */ }
+        this.show();
+    }
+
+    hide() {
+        this._cancelled = true;
+        super.hide();
+    }
+
+    async _retry() {
+        if (this._pending || this._cancelled) return;
+        this._pending = true;
+        this.$retry.disabled = true;
+        this.$status.textContent = 'Choose Allow in the browser’s microphone prompt.';
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Never attach these tracks to a peer, player, or recorder.
+            stream.getTracks().forEach(track => track.stop());
+            if (!this._cancelled) {
+                this.hide();
+                Events.fire('retry-failed-connections');
+            }
+        } catch (error) {
+            if (!this._cancelled) {
+                this.$status.textContent = error.name === 'NotAllowedError'
+                    ? 'Microphone access was not allowed. You can allow it in site settings and try again, or close this dialog.'
+                    : 'Microphone access is unavailable. Check your microphone and browser permissions, then try again.';
+            }
+        } finally {
+            this._pending = false;
+            this.$retry.disabled = false;
+        }
     }
 }
 
@@ -532,6 +589,7 @@ class Snapdrop {
         const peers = new PeersManager(server);
         const peersUI = new PeersUI();
         Events.on('load', e => {
+            const connectionRecoveryDialog = new ConnectionRecoveryDialog();
             const receiveDialog = new ReceiveDialog();
             const sendTextDialog = new SendTextDialog();
             const receiveTextDialog = new ReceiveTextDialog();

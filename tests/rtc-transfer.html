@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>Snapdrop RTC regression test</title>
+<h1>Snapdrop RTC regression test</h1><pre id="result">Connecting…</pre>
+<script src="../client/scripts/network.js"></script><script>
+const result = document.getElementById('result');
+let done = false;
+const reverse = new URLSearchParams(location.search).has('reverse');
+const recovery = new URLSearchParams(location.search).has('recovery');
+let restarted = false;
+const fail = error => { done = true; result.textContent = 'FAIL: ' + error; };
+window.addEventListener('unhandledrejection', e => fail(e.reason));
+
+const relay = (receiver, sender, message) => setTimeout(() => receiver.onServerMessage({...JSON.parse(JSON.stringify(message)), sender}), 0);
+let caller;
+const callee = new RTCPeer({send: message => relay(caller, 'callee', message)});
+caller = new RTCPeer({send: message => relay(callee, 'caller', message)}, 'callee');
+for (let i=0; i<20; i++) caller.refresh();
+const bytes = new Uint8Array(1200000);
+for (let i=0; i<bytes.length; i++) bytes[i] = i % 251;
+Events.on('file-received', async event => {
+ try {
+  const actual = new Uint8Array(await event.detail.blob.arrayBuffer());
+  if (actual.length !== bytes.length || actual.some((byte,i) => byte !== bytes[i])) throw Error('File bytes differ');
+  done = true;
+  result.textContent = 'PASS: ' + (reverse ? 'reversed offerer/answerer roles without reloading; ' : recovery ? 'receiver reestablished the connection without reloading; ' : 'one connection after 20 refreshes; ') + 'transferred 1,200,000 bytes with exact content match.';
+  caller.close(); callee.close();
+ } catch(error) { fail(error); }
+});
+const timer = setInterval(() => {
+ if (done) return clearInterval(timer);
+ if (caller._isConnected() && callee._isConnected()) {
+  if (reverse && !restarted) {
+   restarted = true;
+   callee._reverseRoles();
+   return;
+  }
+  if (reverse && (caller._isCaller || !callee._isCaller)) return fail('Roles did not swap');
+  if (recovery && !restarted) {
+   restarted = true;
+   callee._closeConnection();
+   callee._needsRecovery = true;
+   callee.retryConnection();
+   return;
+  }
+  clearInterval(timer);
+  result.textContent = 'Connected. Transferring file…';
+  caller.sendFiles([new File([bytes], 'test.bin')]);
+ }
+}, 100);
+setTimeout(() => { if (!done) fail('Timed out'); }, 20000);
+</script>

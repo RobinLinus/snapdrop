@@ -12,7 +12,7 @@ process.on('SIGTERM', () => {
 })
 
 const parser = require('ua-parser-js');
-const { uniqueNamesGenerator, animals, colors } = require('unique-names-generator');
+const { getDeviceLabel, getDisplayName } = require('./device-names');
 
 class SnapdropServer {
 
@@ -82,6 +82,16 @@ class SnapdropServer {
         // if room doesn't exist, create it
         if (!this._rooms[peer.ip]) {
             this._rooms[peer.ip] = {};
+        }
+
+        // Tabs with the same identity share a name; only distinct peers compete.
+        const existingPeer = this._rooms[peer.ip][peer.id];
+        if (existingPeer) {
+            peer.name.displayName = existingPeer.name.displayName;
+        } else {
+            const usedNames = new Set(Object.values(this._rooms[peer.ip])
+                .map(otherPeer => otherPeer.name.displayName));
+            peer.name.displayName = getDisplayName(peer.id, peer._deviceLabel, usedNames);
         }
 
         // notify all other peers
@@ -224,13 +234,8 @@ class Peer {
         if(!deviceName)
             deviceName = 'Unknown Device';
 
-        const displayName = uniqueNamesGenerator({
-            length: 2,
-            separator: ' ',
-            dictionaries: [colors, animals],
-            style: 'capital',
-            seed: this.id.hashCode()
-        })
+        this._deviceLabel = getDeviceLabel(ua);
+        const displayName = getDisplayName(this.id, this._deviceLabel);
 
         this.name = {
             model: ua.device.model,
@@ -276,17 +281,5 @@ class Peer {
         return uuid;
     };
 }
-
-Object.defineProperty(String.prototype, 'hashCode', {
-  value: function() {
-    var hash = 0, i, chr;
-    for (i = 0; i < this.length; i++) {
-      chr   = this.charCodeAt(i);
-      hash  = ((hash << 5) - hash) + chr;
-      hash |= 0; // Convert to 32bit integer
-    }
-    return hash;
-  }
-});
 
 const server = new SnapdropServer(process.env.PORT || 3000);

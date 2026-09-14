@@ -1,4 +1,4 @@
-var CACHE_NAME = 'snapdrop-cache-v2';
+var CACHE_NAME = 'snapdrop-cache-v9';
 var urlsToCache = [
   'index.html',
   './',
@@ -17,7 +17,7 @@ self.addEventListener('install', function(event) {
       .then(function(cache) {
         console.log('Opened cache');
         return cache.addAll(urlsToCache);
-      })
+      }).then(() => self.skipWaiting())
   );
 });
 
@@ -46,11 +46,11 @@ self.addEventListener('activate', function(event) {
           // Return true if you want to remove this cache,
           // but remember that caches are shared across
           // the whole origin
-          return true
+          return cacheName.startsWith('snapdrop-cache-') && cacheName !== CACHE_NAME
         }).map(function(cacheName) {
           return caches.delete(cacheName);
         })
       );
-    })
+    }).then(() => self.clients.claim())
   );
 });

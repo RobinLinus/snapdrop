@@ -117,6 +117,19 @@
             </x-paper>
         </x-background>
     </x-dialog>
+    <x-dialog id="connectionRecoveryDialog" role="dialog" aria-modal="true" aria-labelledby="connectionRecoveryTitle" aria-describedby="connectionRecoveryDescription">
+        <x-background class="full center">
+            <x-paper shadow="2">
+                <h3 id="connectionRecoveryTitle">Having trouble connecting?</h3>
+                <p id="connectionRecoveryDescription">Allowing microphone access helps Chrome connect to nearby devices. Snapdrop will briefly activate your microphone and stop it immediately. No audio is recorded or sent.</p>
+                <p id="connectionRecoveryStatus" role="status" aria-live="polite"></p>
+                <div class="row-reverse">
+                    <button class="button" id="connectionRecoveryRetry">Allow</button>
+                    <button class="button" close autofocus>Not now</button>
+                </div>
+            </x-paper>
+        </x-background>
+    </x-dialog>
     <!-- Toast -->
     <div class="toast-container full center">
         <x-toast class="row" shadow="1" id="toast">File Transfer Completed</x-toast>

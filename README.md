@@ -12,7 +12,11 @@
 
 Have any questions? Read our [FAQ](/docs/faq.md).
 
+For connection failures and browser permission quirks, see [WebRTC troubleshooting](/docs/webrtc-troubleshooting.md).
+
 You can [host your own instance with Docker](/docs/local-dev.md).
+
+For the current production server, see [deployment instructions](/docs/deployment.md).
 
 
 ## Support the Snapdrop Community
@@ -20,15 +24,6 @@ Snapdrop is free. Still, we have to pay for the server. If you want to contribut
 
 [<img src="https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif">](https://www.paypal.com/donate/?hosted_button_id=MG8GV7YCYT352)
 
-or Bitcoin:
-
-[<img src="https://coins.github.io/thx/logo-color-large-pill-320px.png" alt="CoinThx" width="200"/>](https://coins.github.io/thx/#1K9zQ8f4iTyhKyHWmiDKt21cYX2QSDckWB?label=Snapdrop&message=Thanks!%20Your%20contribution%20helps%20to%20keep%20Snapdrop%20free%20for%20everybody!) 
-
-[Bitcoin Lighting](https://tippin.me/@robin_linus)
-
 Alternatively, you can become a [Github Sponsor](https://github.com/sponsors/RobinLinus).
 
 Thanks a lot for supporting free and open software!
-
-
- 

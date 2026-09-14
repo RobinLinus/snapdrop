@@ -14,6 +14,17 @@
 if you are using a Chromium-based browser (Chrome, Edge, Brave, etc.), you can easily install Snapdrop PWA on your desktop by clicking the install button in the top-right corner while on [snapdrop.me](https://snapdrop.me) (see below).
 <img src="pwa-install.png">
 
+### Why does Snapdrop ask for microphone permission when a connection fails?
+
+In Chrome, microphone or camera permission can change how WebRTC exposes local
+network addresses and help some failed connections. The recovery prompt is
+optional. If you allow it, Snapdrop briefly activates the microphone, immediately
+stops it, and retries the failed connection without reloading. No audio is
+recorded or sent.
+
+For the explanation, alternatives, and diagnostic steps, see
+[WebRTC troubleshooting](webrtc-troubleshooting.md).
+
 ### What about the connection? Is it a P2P-connection directly from device to device or is there any third-party-server?
 It uses a P2P connection if WebRTC is supported by the browser. WebRTC needs a Signaling Server, but it is only used to establish a connection and is not involved in the file transfer.
 
