@@ -161,6 +161,28 @@ See [Apple's local-network privacy documentation][apple-network].
 
 ## Collect useful diagnostics
 
+### ICE/DTLS connected, but the data channel stalls
+
+In a paired Chrome 150/151 capture, the reversed attempt reached ICE and DTLS
+`connected` on both Macs. The offerer started its probe and timed out after five
+seconds; the answerer stayed at `connectionCheck: "connecting"`. This narrows the
+failure to channel establishment or delivery, but does not prove a missed event
+or rule out transport loss. The old logs did not include SCTP or channel events.
+
+An incoming channel is already `open` when the browser dispatches `datachannel`,
+and the [specification][channel-announcement] requires an `open` event afterward.
+Snapdrop now handles that existing state immediately and starts verification only
+once, even if the later event also fires. This is defensive handling, not proof
+that the recorded failure was caused by a missing event.
+
+Compare `channel-attached`, `channel-open`, and the `connection-check-*` send/receive
+events on both endpoints. Diagnostics include `sctp`, the current `channel` (or
+`null` if none was delivered), and `dataChannels` message/byte counters. A probe
+send means the browser accepted it into its buffer; only the matching reply
+proves the round trip. These events log probe IDs, never file or text payloads.
+
+### Capturing both endpoints
+
 Record browser and OS versions, which browser runs on each physical device,
 whether the devices share a network, and which side granted permission. Separate
 a two-browser test on one computer from a test across two devices.
@@ -207,3 +229,4 @@ before testing a change to the signaling protocol.
 [apple-network]: https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
 
 [ws-lifecycle]: https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_client_applications#working_with_the_bfcache
+[channel-announcement]: https://www.w3.org/TR/webrtc/#announcing-a-data-channel-instance

@@ -181,12 +181,14 @@ test('diagnostics include resolvable addresses while omitting SDP', async () => 
     conn.connectionState = 'failed';
     conn.iceConnectionState = 'failed';
     conn.iceGatheringState = 'complete';
+    conn.sctp = { state: 'connecting' };
     conn.localDescription.sdp = 'sensitive-session-description';
     conn.getStats = async () => new Map([
         ['local', { type: 'local-candidate', candidateType: 'host', protocol: 'udp', address: '192.168.1.2' }],
         ['remote', { type: 'remote-candidate', candidateType: 'host', protocol: 'udp', address: 'private-device.local' }],
         ['pair', { type: 'candidate-pair', localCandidateId: 'local', remoteCandidateId: 'remote', state: 'failed', requestsSent: 7, responsesReceived: 0 }],
-        ['transport', { type: 'transport', dtlsState: 'new', iceState: 'failed' }]
+        ['transport', { type: 'transport', dtlsState: 'new', iceState: 'failed' }],
+        ['channel', { type: 'data-channel', dataChannelIdentifier: 1, state: 'connecting', messagesSent: 1, messagesReceived: 0 }]
     ]);
     const report = await peer._reportDiagnostics(conn, 'test');
     assert.equal(report.pairs[0].requestsSent, 7);
@@ -194,6 +196,10 @@ test('diagnostics include resolvable addresses while omitting SDP', async () => 
     assert.equal(report.pairs[0].local.addressKind, 'ipv4');
     assert.equal(report.pairs[0].remote.addressKind, 'mdns');
     assert.equal(report.transports[0].dtlsState, 'new');
+    assert.equal(report.sctp, 'connecting');
+    assert.equal(report.channel.state, 'connecting');
+    assert.equal(report.dataChannels[0].messagesSent, 1);
+    assert.equal(report.dataChannels[0].messagesReceived, 0);
     assert.equal(report.localDescription, 'offer');
     const json = JSON.stringify(report);
     assert.ok(json.includes('192.168.1.2'));
@@ -318,6 +324,7 @@ test('losing an established channel does not trigger an automatic role swap', as
     const t = setup();
     const peer = new t.RTCPeer(t.server, 'peer');
     await peer._operations;
+    peer._channel.readyState = 'open';
     peer._channel.onopen();
     failConnection(peer);
     assert.equal(t.connections.length, 1);
@@ -345,6 +352,39 @@ async function checkablePeer() {
     t.channel = t.peer._channel;
     return t;
 }
+
+test('an incoming already-open channel verifies without an open event and ignores a later duplicate', async () => {
+    const t = setup();
+    const peer = new t.RTCPeer(t.server);
+    await peer.onServerMessage({ sender: 'peer', reversed: false, connectionCheck: true,
+        sdp: { type: 'offer', sdp: 'offer' } });
+    const conn = peer._conn;
+    const channel = conn.createDataChannel();
+    channel.readyState = 'open';
+    conn.ondatachannel({ channel });
+    assert.equal(peer._connectionCheck, 'pending');
+    assert.equal(channel.sent.length, 1);
+    const deadline = [...t.timers.keys()][0];
+    channel.onopen();
+    assert.equal(channel.sent.length, 1);
+    assert.equal([...t.timers.keys()][0], deadline);
+    channel.onmessage({ data: JSON.stringify({ type: 'connection-check', id: 7 }) });
+    channel.onmessage({ data: JSON.stringify({ type: 'connection-check-reply', id: channel.sent[0].id }) });
+    assert.equal(peer._isConnected(), true);
+    assert.equal(t.timers.size, 0);
+    channel.onopen();
+    assert.equal(peer._connectionCheck, 'passed');
+    const events = t.logs.map(args => JSON.parse(args[0].slice('Snapdrop: '.length)).event);
+    for (const event of ['channel-attached', 'channel-open', 'connection-check-send',
+        'connection-check-receive', 'connection-check-reply-send', 'connection-check-reply-receive']) {
+        assert.equal(events.filter(value => value === event).length, 1);
+    }
+    const lateOpen = channel.onopen;
+    peer.close();
+    lateOpen();
+    assert.equal(channel.onerror, null);
+    assert.equal(t.errors.length, 0);
+});
 
 test('open channel must echo a probe before sending files; reply clears the deadline', async () => {
     const t = await checkablePeer();

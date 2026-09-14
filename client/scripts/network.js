@@ -413,24 +413,37 @@ class RTCPeer extends Peer {
         if (this._conn !== conn) return channel.close();
         this._channel = channel;
         channel.binaryType = 'arraybuffer';
+        const log = (event, details = {}) => ConnectionLog.write(event, {
+            peer: this._peerId, session: this._signalId, attempt: this._reversed ? 'reversed' : 'initial',
+            channel: channel.id, state: channel.readyState, bufferedAmount: channel.bufferedAmount,
+            ...details
+        });
+        log('channel-attached');
+        let opened = false;
         channel.onopen = () => {
-            if (this._conn !== conn) return;
+            if (this._conn !== conn || opened || channel.readyState !== 'open') return;
+            opened = true;
+            log('channel-open');
             if (!this._supportsConnectionCheck) return this._confirmConnection(conn, 'unsupported');
             this._connectionCheck = 'pending';
             this._checkId = (this._checkId || 0) + 1;
             this._armConnectionTimeout(conn, 5000, 'connection-check-timeout');
             // Send over the data channel itself, before allowing file transfers.
             channel.send(JSON.stringify({ type: 'connection-check', id: this._checkId }));
+            log('connection-check-send', { id: this._checkId });
         };
         channel.onmessage = event => {
             if (this._conn !== conn) return;
             if (typeof event.data === 'string') {
                 const message = JSON.parse(event.data);
                 if (message.type === 'connection-check') {
+                    log('connection-check-receive', { id: message.id });
                     channel.send(JSON.stringify({ type: 'connection-check-reply', id: message.id }));
+                    log('connection-check-reply-send', { id: message.id });
                     return;
                 }
                 if (message.type === 'connection-check-reply') {
+                    log('connection-check-reply-receive', { id: message.id });
                     if (this._connectionCheck === 'pending' && message.id === this._checkId) {
                         this._confirmConnection(conn, 'passed');
                     }
@@ -441,9 +454,19 @@ class RTCPeer extends Peer {
         };
         channel.onclose = () => {
             if (this._conn !== conn) return;
+            log('channel-close');
             if (!this._connectedOnce) this._failConnection(conn, 'channel-closed-before-verification');
             else this._closeConnection();
         };
+        channel.onerror = event => {
+            if (this._conn !== conn) return;
+            const error = event.error || {};
+            log('channel-error', { name: error.name, message: error.message,
+                detail: error.errorDetail, sctpCauseCode: error.sctpCauseCode });
+        };
+        // Incoming channels can already be open in ondatachannel. Start once,
+        // whether readiness is observed here or in a subsequent open event.
+        if (channel.readyState === 'open') channel.onopen();
     }
 
     _armConnectionTimeout(conn, delay, reason) {
@@ -477,7 +500,7 @@ class RTCPeer extends Peer {
         this._channel = null;
         this._pendingIce = [];
         if (channel) {
-            channel.onopen = channel.onmessage = channel.onclose = null;
+            channel.onopen = channel.onmessage = channel.onclose = channel.onerror = null;
             channel.close();
         }
         if (conn) {
@@ -527,13 +550,16 @@ class RTCPeer extends Peer {
             session: this._signalId, remoteSession: this._remoteSession,
             attempt: this._reversed ? 'reversed' : 'initial',
             connectionCheck: this._connectionCheck,
+            channel: this._channel ? { id: this._channel.id, state: this._channel.readyState,
+                bufferedAmount: this._channel.bufferedAmount } : null,
+            sctp: conn.sctp ? conn.sctp.state : null,
             role: this._isCaller ? 'offerer' : 'answerer',
             connection: conn.connectionState, ice: conn.iceConnectionState,
             gathering: conn.iceGatheringState, signaling: conn.signalingState,
             localDescription: conn.localDescription && conn.localDescription.type,
             remoteDescription: conn.remoteDescription && conn.remoteDescription.type,
             ...JSON.parse(JSON.stringify(this._diagnostics)),
-            pairs: [], transports: []
+            pairs: [], transports: [], dataChannels: []
         };
         try {
             const stats = await conn.getStats();
@@ -549,6 +575,10 @@ class RTCPeer extends Peer {
                     });
                 } else if (stat.type === 'transport') {
                     report.transports.push({ iceState: stat.iceState, dtlsState: stat.dtlsState });
+                } else if (stat.type === 'data-channel') {
+                    report.dataChannels.push({ id: stat.dataChannelIdentifier, state: stat.state,
+                        messagesSent: stat.messagesSent, messagesReceived: stat.messagesReceived,
+                        bytesSent: stat.bytesSent, bytesReceived: stat.bytesReceived });
                 }
             });
         } catch (error) {
