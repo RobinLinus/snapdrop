@@ -1,6 +1,34 @@
 window.URL = window.URL || window.webkitURL;
 window.isRtcSupported = !!(window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection);
-console.log('RTC diagnostics enabled (v1)');
+class ConnectionLog {
+    static write(event, details = {}) {
+        const line = 'Snapdrop: ' + JSON.stringify({
+            version: 2, time: new Date().toISOString(), page: ConnectionLog.page, event, ...details
+        });
+        if (event.endsWith('-error')) console.error(line);
+        else console.log(line);
+    }
+
+    static message(message) {
+        // Keep routing and connection details, never SDP credentials or shared content.
+        const details = {};
+        for (const key of ['type', 'sender', 'to', 'sessionId', 'senderSession', 'toSession',
+            'reversed', 'reverse', 'restart', 'disconnected', 'connectionCheck', 'peerId']) {
+            if (message[key] !== undefined) details[key] = message[key];
+        }
+        if (message.sdp) details.sdp = { type: message.sdp.type };
+        if (message.ice) details.ice = RTCPeer._candidateSummary(message.ice);
+        const peerInfo = peer => ({ id: peer.id, name: peer.name && peer.name.displayName, rtcSupported: peer.rtcSupported });
+        if (message.peers) details.peers = message.peers.map(peerInfo);
+        if (message.peer) details.peer = peerInfo(message.peer);
+        if (message.type === 'display-name') details.identity = {
+            id: message.message.id, connectionId: message.message.connectionId, name: message.message.displayName
+        };
+        return details;
+    }
+}
+ConnectionLog.page = Math.random().toString(36).slice(2, 10);
+ConnectionLog.write('client-start', { userAgent: typeof navigator === 'undefined' ? undefined : navigator.userAgent });
 
 class ServerConnection {
 
@@ -18,20 +46,20 @@ class ServerConnection {
         if (this._isConnected() || this._isConnecting()) return;
         const ws = new WebSocket(this._endpoint());
         ws.binaryType = 'arraybuffer';
-        ws.onopen = e => console.log('WS: server connected');
+        ws.onopen = () => ConnectionLog.write('ws-open');
         ws.onmessage = e => { if (this._socket === ws) this._onMessage(e.data); };
-        ws.onclose = () => {
+        ws.onclose = event => {
             if (this._socket !== ws) return;
             this._socket = null;
-            this._onDisconnect();
+            this._onDisconnect(event);
         };
-        ws.onerror = e => console.error(e);
+        ws.onerror = () => ConnectionLog.write('ws-error', { readyState: ws.readyState });
         this._socket = ws;
     }
 
     _onMessage(msg) {
         msg = JSON.parse(msg);
-        console.log('WS:', msg);
+        if (msg.type !== 'ping') ConnectionLog.write('ws-receive', ConnectionLog.message(msg));
         switch (msg.type) {
             case 'peers':
                 Events.fire('peers', msg.peers.filter(peer => peer.id !== this._selfId));
@@ -55,7 +83,7 @@ class ServerConnection {
                 Events.fire('display-name', msg);
                 break;
             default:
-                console.error('WS: unkown message type', msg);
+                ConnectionLog.write('ws-unknown-message', { type: msg.type });
         }
     }
 
@@ -63,6 +91,7 @@ class ServerConnection {
         if (message.to && message.to === this._selfId) return;
         if (!this._isConnected()) return;
         this._socket.send(JSON.stringify(message));
+        if (message.type !== 'pong') ConnectionLog.write('ws-send', ConnectionLog.message(message));
     }
 
     nextSessionId() {
@@ -87,8 +116,8 @@ class ServerConnection {
         socket.close();
     }
 
-    _onDisconnect() {
-        console.log('WS: server disconnected');
+    _onDisconnect(event = {}) {
+        ConnectionLog.write('ws-close', { code: event.code, clean: event.wasClean });
         Events.fire('notify-user', 'Connection lost. Retry in 5 seconds...');
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = setTimeout(_ => this._connect(), 5000);
@@ -172,7 +201,7 @@ class Peer {
             return;
         }
         message = JSON.parse(message);
-        console.log('RTC:', message);
+        ConnectionLog.write('data-receive', { peer: this._peerId, type: message.type, size: message.size, progress: message.progress });
         switch (message.type) {
             case 'header':
                 this._onFileHeader(message);
@@ -280,7 +309,7 @@ class RTCPeer extends Peer {
         };
         conn.onicecandidateerror = event => {
             if (this._conn !== conn) return;
-            // Omit local addresses, candidate strings, SDP, and credentials.
+            // Omit SDP and credentials; candidate hostnames are logged for resolution tests.
             this._diagnostics.iceServerErrors.push({ url: event.url, code: event.errorCode });
             this._reportDiagnostics(conn, 'ice-server-error');
         };
@@ -294,7 +323,7 @@ class RTCPeer extends Peer {
         };
         conn.onconnectionstatechange = () => {
             if (this._conn !== conn) return;
-            console.log('RTC: state changed:', conn.connectionState);
+            ConnectionLog.write('rtc-state', { peer: this._peerId, session: this._signalId, connection: conn.connectionState });
             if (conn.connectionState === 'failed') this._failConnection(conn, 'connection-failed');
         };
         conn.ondatachannel = event => this._setChannel(event.channel, conn);
@@ -469,7 +498,7 @@ class RTCPeer extends Peer {
     }
 
     _onError(error) {
-        console.error(error);
+        ConnectionLog.write('rtc-error', { peer: this._peerId, session: this._signalId, name: error.name, message: error.message });
         if (this._conn) {
             this._diagnostics.signalingErrors.push({ name: error.name, state: this._conn.signalingState });
             this._reportDiagnostics(this._conn, 'signaling-error');
@@ -483,6 +512,9 @@ class RTCPeer extends Peer {
         return {
             type: candidate.candidateType || candidate.type || parts[7] || 'end-of-candidates',
             protocol: candidate.protocol || parts[2],
+            address: address || undefined,
+            port: candidate.port === undefined ? (Number(parts[5]) || undefined) : candidate.port,
+            mid: candidate.sdpMid === undefined ? undefined : candidate.sdpMid,
             addressKind: !address ? 'unavailable' : address.endsWith('.local') ? 'mdns'
                 : address.includes(':') ? 'ipv6' : /^\d+\./.test(address) ? 'ipv4' : 'hostname'
         };
@@ -491,7 +523,8 @@ class RTCPeer extends Peer {
     async _reportDiagnostics(conn, reason) {
         // Capture state before an asynchronous stats request or connection teardown.
         const report = {
-            version: 1, reason, peer: this._peerId,
+            version: 2, time: new Date().toISOString(), reason, peer: this._peerId,
+            session: this._signalId, remoteSession: this._remoteSession,
             attempt: this._reversed ? 'reversed' : 'initial',
             connectionCheck: this._connectionCheck,
             role: this._isCaller ? 'offerer' : 'answerer',
@@ -521,7 +554,7 @@ class RTCPeer extends Peer {
         } catch (error) {
             report.statsError = error.name;
         }
-        console.log('RTC diagnostics: ' + JSON.stringify(report));
+        ConnectionLog.write('rtc-diagnostics', report);
         return report;
     }
 

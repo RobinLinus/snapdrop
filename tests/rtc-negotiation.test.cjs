@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 function setup() {
-    const connections = [], errors = [], sent = [], events = [];
+    const connections = [], errors = [], sent = [], events = [], logs = [];
     const timers = new Map();
     const listeners = new Map();
     let nextTimer = 0;
@@ -47,15 +47,15 @@ function setup() {
             addEventListener(type, callback) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(callback); },
             dispatchEvent(event) { events.push(event); for (const callback of listeners.get(event.type) || []) callback(event); } },
         CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
-        console: { log() {}, error(error) { errors.push(error); } },
+        console: { log(...args) { logs.push(args); }, error(error) { errors.push(error); } },
         setTimeout(callback, delay) { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
         clearTimeout(id) { timers.delete(id); },
         RTCPeerConnection: Connection,
         RTCSessionDescription: class { constructor(value) { Object.assign(this, value); } },
         RTCIceCandidate: class { constructor(value) { Object.assign(this, value); } },
     });
-    vm.runInContext(fs.readFileSync('client/scripts/network.js', 'utf8') + '\nthis.RTCPeer = RTCPeer; this.PeersManager = PeersManager;', context);
-    return { ...context, connections, errors, sent, events, timers, server: { send(message) { sent.push(message); } } };
+    vm.runInContext(fs.readFileSync('client/scripts/network.js', 'utf8') + '\nthis.RTCPeer = RTCPeer; this.PeersManager = PeersManager; this.ConnectionLog = ConnectionLog; this.Peer = Peer;', context);
+    return { ...context, connections, errors, sent, events, timers, logs, server: { send(message) { sent.push(message); } } };
 }
 
 test('sessions from two tabs of one peer negotiate independently and replies retain their destination', async () => {
@@ -173,7 +173,7 @@ test('late answers cannot recreate a final failed connection; explicit retry cre
     assert.equal(t.errors.length, 0);
 });
 
-test('diagnostics capture ICE checks and DTLS without copying addresses or SDP', async () => {
+test('diagnostics include resolvable addresses while omitting SDP', async () => {
     const t = setup();
     const peer = new t.RTCPeer(t.server, 'peer');
     await peer._operations;
@@ -196,9 +196,9 @@ test('diagnostics capture ICE checks and DTLS without copying addresses or SDP',
     assert.equal(report.transports[0].dtlsState, 'new');
     assert.equal(report.localDescription, 'offer');
     const json = JSON.stringify(report);
-    for (const value of ['192.168.1.2', 'private-device.local', 'sensitive-session-description']) {
-        assert.ok(!json.includes(value));
-    }
+    assert.ok(json.includes('192.168.1.2'));
+    assert.ok(json.includes('private-device.local'));
+    assert.ok(!json.includes('sensitive-session-description'));
 });
 
 test('candidate diagnostics distinguish mDNS, public candidates, and end-of-candidates', () => {
@@ -454,4 +454,32 @@ test('pagehide clears peers and reconnect snapshots rebuild them without stale d
     assert.equal(t.timers.size, 0);
     await old._operations;
     assert.equal(t.errors.length, 0);
+});
+
+
+test('pasted logs are single-string JSON with exact ICE hostnames and no SDP or shared text', () => {
+    const t = setup();
+    t.ConnectionLog.write('ws-receive', t.ConnectionLog.message({
+        type: 'signal', sender: 'phone', senderSession: 'tab', sessionId: 'tab:1', reversed: false,
+        sdp: { type: 'offer', sdp: 'a=ice-pwd:secret-password' },
+        ice: { candidate: 'candidate:1 1 udp 123 test-device.local 1234 typ host ufrag secret-fragment', sdpMid: '0' }
+    }));
+    const peer = new t.Peer(t.server, 'phone');
+    peer._onTextReceived = () => {};
+    peer._onMessage(JSON.stringify({ type: 'text', text: 'private-shared-text' }));
+    for (const args of t.logs) {
+        assert.equal(args.length, 1);
+        assert.equal(typeof args[0], 'string');
+        const record = JSON.parse(args[0].slice('Snapdrop: '.length));
+        assert.equal(record.version, 2);
+        assert.ok(record.time.endsWith('Z'));
+        assert.ok(record.page);
+    }
+    const signal = JSON.parse(t.logs[1][0].slice('Snapdrop: '.length));
+    assert.equal(signal.ice.address, 'test-device.local');
+    assert.equal(signal.ice.port, 1234);
+    assert.equal(signal.sdp.type, 'offer');
+    assert.equal(signal.sessionId, 'tab:1');
+    const output = JSON.stringify(t.logs);
+    for (const secret of ['secret-password', 'secret-fragment', 'private-shared-text']) assert.ok(!output.includes(secret));
 });

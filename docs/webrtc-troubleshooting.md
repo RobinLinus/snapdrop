@@ -165,7 +165,7 @@ Record browser and OS versions, which browser runs on each physical device,
 whether the devices share a network, and which side granted permission. Separate
 a two-browser test on one computer from a test across two devices.
 
-Capture the `RTC diagnostics:` lines from both endpoints through failure and,
+Filter the console for `Snapdrop:` and copy the lines from both endpoints through failure and,
 if possible, through a successful retry. Compare:
 
 - Round-trip result (`connecting`, `pending`, `passed`, or `unsupported`) and
@@ -176,9 +176,18 @@ if possible, through a successful retry. Compare:
 - Candidate-pair states and connectivity-check requests/responses.
 - ICE, DTLS, and data-channel connection states.
 
-The structured diagnostics omit raw addresses, SDP, and candidate strings.
-Other console messages can contain raw signaling objects; redact those before
-sharing publicly. Event-time stats may lag state transitions, and teardown can
+Logging version 2 writes each event as one JSON string, so copying the console
+preserves nested fields without expanding objects. `time` is the event timestamp;
+`page` distinguishes page loads, while signaling session IDs distinguish connections.
+`ws-send` and `ws-receive` include SDP types, routing, retry flags, and candidate
+summaries. `rtc-diagnostics` includes state and candidate-pair statistics. Routine
+WebSocket pings/pongs are omitted.
+
+Candidate `address` and `port` are included, including the exact temporary `.local`
+hostnames to resolve while the connection is active. These logs contain network
+addresses; redact them if publishing a report publicly. Raw SDP, ICE passwords,
+and shared text/file contents are not logged. `client-start` includes the browser
+user agent and `version: 2` to identify the new logging format. Event-time stats may lag state transitions, and teardown can
 remove candidate pairs. An empty list after failure does not prove that no
 candidates were tried.
 
